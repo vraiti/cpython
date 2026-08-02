@@ -11,6 +11,11 @@
 extern "C" {
 #endif
 
+struct _Py_hashtable_t;
+PyAPI_DATA(struct _Py_hashtable_t *) PyTrace_Hashtable;
+void *PyTrace_Get(void *ptr);
+int PyTrace_Set(void *ptr, void *value);
+
 /* BEWARE:
 
    Each interface exports both functions and macros.  Extension modules should

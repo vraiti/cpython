@@ -6,9 +6,12 @@
 
 #include "pycore_obmalloc.h"
 #include "pycore_pymem.h"
+#include "pycore_hashtable.h"
 
 #include <stdlib.h>               // malloc()
 #include <stdbool.h>
+
+_Py_hashtable_t *PyTrace_Hashtable = NULL;
 
 #undef  uint
 #define uint pymem_uint
@@ -788,9 +791,20 @@ _PyMem_Strdup(const char *str)
 /* the "object" allocator */
 /**************************/
 
+static inline void
+_PyTrace_EnsureInit(void)
+{
+    if (PyTrace_Hashtable == NULL) {
+        PyTrace_Hashtable = _Py_hashtable_new(
+            _Py_hashtable_hash_ptr,
+            _Py_hashtable_compare_direct);
+    }
+}
+
 void *
 PyObject_Malloc(size_t size)
 {
+    _PyTrace_EnsureInit();
     /* see PyMem_RawMalloc() */
     if (size > (size_t)PY_SSIZE_T_MAX)
         return NULL;
@@ -798,12 +812,17 @@ PyObject_Malloc(size_t size)
     OBJECT_STAT_INC_COND(allocations4k, size >= 512 && size < 4094);
     OBJECT_STAT_INC_COND(allocations_big, size >= 4094);
     OBJECT_STAT_INC(allocations);
-    return _PyObject.malloc(_PyObject.ctx, size);
+    void *ptr = _PyObject.malloc(_PyObject.ctx, size);
+    if (ptr != NULL) {
+        _Py_hashtable_set(PyTrace_Hashtable, ptr, NULL);
+    }
+    return ptr;
 }
 
 void *
 PyObject_Calloc(size_t nelem, size_t elsize)
 {
+    _PyTrace_EnsureInit();
     /* see PyMem_RawMalloc() */
     if (elsize != 0 && nelem > (size_t)PY_SSIZE_T_MAX / elsize)
         return NULL;
@@ -811,23 +830,68 @@ PyObject_Calloc(size_t nelem, size_t elsize)
     OBJECT_STAT_INC_COND(allocations4k, elsize >= 512 && elsize < 4094);
     OBJECT_STAT_INC_COND(allocations_big, elsize >= 4094);
     OBJECT_STAT_INC(allocations);
-    return _PyObject.calloc(_PyObject.ctx, nelem, elsize);
+    void *ptr = _PyObject.calloc(_PyObject.ctx, nelem, elsize);
+    if (ptr != NULL) {
+        _Py_hashtable_set(PyTrace_Hashtable, ptr, NULL);
+    }
+    return ptr;
 }
 
 void *
 PyObject_Realloc(void *ptr, size_t new_size)
 {
+    _PyTrace_EnsureInit();
     /* see PyMem_RawMalloc() */
     if (new_size > (size_t)PY_SSIZE_T_MAX)
         return NULL;
-    return _PyObject.realloc(_PyObject.ctx, ptr, new_size);
+    void *old_value = NULL;
+    if (ptr != NULL) {
+        old_value = _Py_hashtable_steal(PyTrace_Hashtable, ptr);
+    }
+    void *new_ptr = _PyObject.realloc(_PyObject.ctx, ptr, new_size);
+    if (new_ptr != NULL) {
+        _Py_hashtable_set(PyTrace_Hashtable, new_ptr, old_value);
+    }
+    return new_ptr;
 }
 
 void
 PyObject_Free(void *ptr)
 {
+    _PyTrace_EnsureInit();
+    if (ptr != NULL) {
+        void *value = _Py_hashtable_steal(PyTrace_Hashtable, ptr);
+        if (value != NULL) {
+            free(value);
+        }
+    }
     OBJECT_STAT_INC(frees);
     _PyObject.free(_PyObject.ctx, ptr);
+}
+
+void *
+PyTrace_Get(void *ptr)
+{
+    _Py_hashtable_entry_t *entry = _Py_hashtable_get_entry(
+        PyTrace_Hashtable, ptr);
+    if (entry == NULL) {
+        fprintf(stderr, "PyTrace_Get: pointer %p is not tracked\n", ptr);
+        return NULL;
+    }
+    return entry->value;
+}
+
+int
+PyTrace_Set(void *ptr, void *value)
+{
+    _Py_hashtable_entry_t *entry = _Py_hashtable_get_entry(
+        PyTrace_Hashtable, ptr);
+    if (entry == NULL) {
+        fprintf(stderr, "PyTrace_Set: pointer %p is not tracked\n", ptr);
+        return -1;
+    }
+    entry->value = value;
+    return 0;
 }
 
 
