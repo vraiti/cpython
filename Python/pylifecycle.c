@@ -28,6 +28,7 @@
 #include "pycore_typeobject.h"    // _PyTypes_InitTypes()
 #include "pycore_typevarobject.h" // _Py_clear_generic_types()
 #include "pycore_unicodeobject.h" // _PyUnicode_InitTypes()
+#include "pycore_hashtable.h"
 #include "opcode.h"
 
 #include <locale.h>               // setlocale()
@@ -1290,6 +1291,19 @@ Py_InitializeFromConfig(const PyConfig *config)
     if (config == NULL) {
         return _PyStatus_ERR("initialization config is NULL");
     }
+
+    extern _Py_hashtable_t *_PyObjects_Extra;
+    extern _Py_hashtable_t *_Py_Calloc_Addrs;
+    extern Py_uhash_t _hash_ptr_splitmix(const void *key);
+    _Py_hashtable_allocator_t alloc = {malloc, free};
+    _PyObjects_Extra = _Py_hashtable_new_full(
+        _hash_ptr_splitmix,
+        _Py_hashtable_compare_direct,
+        NULL, NULL, &alloc);
+    _Py_Calloc_Addrs = _Py_hashtable_new_full(
+        _hash_ptr_splitmix,
+        _Py_hashtable_compare_direct,
+        NULL, NULL, &alloc);
 
     PyStatus status;
 

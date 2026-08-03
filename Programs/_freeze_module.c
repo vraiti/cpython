@@ -13,7 +13,6 @@
 #include <marshal.h>
 #include "pycore_fileutils.h"     // _Py_stat_struct
 #include <pycore_import.h>
-#include "pycore_hashtable.h"
 
 #include <stdio.h>
 #include <stdlib.h>               // malloc()
@@ -59,13 +58,6 @@ static const char header[] =
 static void
 runtime_init(void)
 {
-    _Py_hashtable_allocator_t alloc = {malloc, free};
-    extern _Py_hashtable_t *_PyObjects_Extra;
-    _PyObjects_Extra = _Py_hashtable_new_full(
-        _Py_hashtable_hash_ptr,
-        _Py_hashtable_compare_direct,
-        NULL, NULL, &alloc);
-
     PyConfig config;
     PyConfig_InitIsolatedConfig(&config);
 

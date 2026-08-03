@@ -790,7 +790,22 @@ _PyMem_Strdup(const char *str)
 /* object extras tracking */
 /**************************/
 
+Py_uhash_t
+_hash_ptr_splitmix(const void *key)
+{
+    uint64_t x = (uint64_t)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return (Py_uhash_t)(x ^ (x >> 31));
+}
+
+typedef union {
+    struct { uint32_t nelem; uint32_t elsize; };
+    void *packed;
+} _PyCallocInfo;
+
 _Py_hashtable_t *_PyObjects_Extra = NULL;
+_Py_hashtable_t *_Py_Calloc_Addrs = NULL;
 static void (*_PyObjects_Extra_Free_hook_fn)(void *) = NULL;
 
 void
@@ -856,10 +871,13 @@ PyObject_Calloc(size_t nelem, size_t elsize)
     OBJECT_STAT_INC(allocations);
     void *ptr = _PyObject.calloc(_PyObject.ctx, nelem, elsize);
     if (ptr != NULL) {
-        if (nelem > 1) {
-            fprintf(stderr, "PyObject_Calloc: nelem=%zu elsize=%zu\n", nelem, elsize);
+        for (char *cur = ptr; cur < (char *)ptr + nelem * elsize; cur += elsize) {
+            _Py_hashtable_set(_PyObjects_Extra, cur, NULL);
         }
-        _Py_hashtable_set(_PyObjects_Extra, ptr, NULL);
+        if (nelem > 1) {
+            _PyCallocInfo info = { .nelem = (uint32_t)nelem, .elsize = (uint32_t)elsize };
+            _Py_hashtable_set(_Py_Calloc_Addrs, ptr, info.packed);
+        }
     }
     return ptr;
 }
@@ -882,12 +900,27 @@ void
 PyObject_Free(void *ptr)
 {
     OBJECT_STAT_INC(frees);
-    void *extra = _Py_hashtable_steal(_PyObjects_Extra, ptr);
-    if (extra != NULL) {
-        if (_PyObjects_Extra_Free_hook_fn != NULL) {
-            _PyObjects_Extra_Free_hook_fn(extra);
-        } else {
-            fprintf(stderr, "PyObject_Free: extra %p leaked (no free hook set)\n", extra);
+    void *calloc_packed = _Py_hashtable_steal(_Py_Calloc_Addrs, ptr);
+    if (calloc_packed != NULL) {
+        _PyCallocInfo info = { .packed = calloc_packed };
+        for (char *cur = ptr; cur < (char *)ptr + info.nelem * info.elsize; cur += info.elsize) {
+            void *extra = _Py_hashtable_steal(_PyObjects_Extra, cur);
+            if (extra != NULL) {
+                if (_PyObjects_Extra_Free_hook_fn != NULL) {
+                    _PyObjects_Extra_Free_hook_fn(extra);
+                } else {
+                    fprintf(stderr, "PyObject_Free: extra %p leaked (no free hook set)\n", extra);
+                }
+            }
+        }
+    } else {
+        void *extra = _Py_hashtable_steal(_PyObjects_Extra, ptr);
+        if (extra != NULL) {
+            if (_PyObjects_Extra_Free_hook_fn != NULL) {
+                _PyObjects_Extra_Free_hook_fn(extra);
+            } else {
+                fprintf(stderr, "PyObject_Free: extra %p leaked (no free hook set)\n", extra);
+            }
         }
     }
     _PyObject.free(_PyObject.ctx, ptr);
