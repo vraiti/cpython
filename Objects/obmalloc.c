@@ -6,6 +6,8 @@
 
 #include "pycore_obmalloc.h"
 #include "pycore_pymem.h"
+#include "pycore_hashtable.h"
+#include "pycore_object.h"
 
 #include <stdlib.h>               // malloc()
 #include <stdbool.h>
@@ -785,6 +787,43 @@ _PyMem_Strdup(const char *str)
 
 
 /**************************/
+/* object extras tracking */
+/**************************/
+
+_Py_hashtable_t *_PyObjects_Extra = NULL;
+static void (*_PyObjects_Extra_Free_hook_fn)(void *) = NULL;
+
+void
+Set_PyObjects_Extra_Free_hook(void (*hook)(void *))
+{
+    _PyObjects_Extra_Free_hook_fn = hook;
+}
+
+void
+PyObjects_SetExtra(PyObject *obj, void *extra)
+{
+    void *key = (char *)obj - _PyType_PreHeaderSize(Py_TYPE(obj));
+    _Py_hashtable_entry_t *entry = _Py_hashtable_get_entry(_PyObjects_Extra, key);
+    if (entry == NULL) {
+        fprintf(stderr, "PyObjects_SetExtra: key %p not found in _PyObjects_Extra\n", key);
+        return;
+    }
+    entry->value = extra;
+}
+
+void *
+PyObjects_GetExtra(PyObject *obj)
+{
+    void *key = (char *)obj - _PyType_PreHeaderSize(Py_TYPE(obj));
+    _Py_hashtable_entry_t *entry = _Py_hashtable_get_entry(_PyObjects_Extra, key);
+    if (entry == NULL) {
+        fprintf(stderr, "PyObjects_GetExtra: key %p not found in _PyObjects_Extra\n", key);
+        return NULL;
+    }
+    return entry->value;
+}
+
+/**************************/
 /* the "object" allocator */
 /**************************/
 
@@ -798,7 +837,11 @@ PyObject_Malloc(size_t size)
     OBJECT_STAT_INC_COND(allocations4k, size >= 512 && size < 4094);
     OBJECT_STAT_INC_COND(allocations_big, size >= 4094);
     OBJECT_STAT_INC(allocations);
-    return _PyObject.malloc(_PyObject.ctx, size);
+    void *ptr = _PyObject.malloc(_PyObject.ctx, size);
+    if (ptr != NULL) {
+        _Py_hashtable_set(_PyObjects_Extra, ptr, NULL);
+    }
+    return ptr;
 }
 
 void *
@@ -811,7 +854,14 @@ PyObject_Calloc(size_t nelem, size_t elsize)
     OBJECT_STAT_INC_COND(allocations4k, elsize >= 512 && elsize < 4094);
     OBJECT_STAT_INC_COND(allocations_big, elsize >= 4094);
     OBJECT_STAT_INC(allocations);
-    return _PyObject.calloc(_PyObject.ctx, nelem, elsize);
+    void *ptr = _PyObject.calloc(_PyObject.ctx, nelem, elsize);
+    if (ptr != NULL) {
+        if (nelem > 1) {
+            fprintf(stderr, "PyObject_Calloc: nelem=%zu elsize=%zu\n", nelem, elsize);
+        }
+        _Py_hashtable_set(_PyObjects_Extra, ptr, NULL);
+    }
+    return ptr;
 }
 
 void *
@@ -820,13 +870,26 @@ PyObject_Realloc(void *ptr, size_t new_size)
     /* see PyMem_RawMalloc() */
     if (new_size > (size_t)PY_SSIZE_T_MAX)
         return NULL;
-    return _PyObject.realloc(_PyObject.ctx, ptr, new_size);
+    void *new_ptr = _PyObject.realloc(_PyObject.ctx, ptr, new_size);
+    if (new_ptr != NULL) {
+        _Py_hashtable_set(_PyObjects_Extra, new_ptr,
+                          _Py_hashtable_steal(_PyObjects_Extra, ptr));
+    }
+    return new_ptr;
 }
 
 void
 PyObject_Free(void *ptr)
 {
     OBJECT_STAT_INC(frees);
+    void *extra = _Py_hashtable_steal(_PyObjects_Extra, ptr);
+    if (extra != NULL) {
+        if (_PyObjects_Extra_Free_hook_fn != NULL) {
+            _PyObjects_Extra_Free_hook_fn(extra);
+        } else {
+            fprintf(stderr, "PyObject_Free: extra %p leaked (no free hook set)\n", extra);
+        }
+    }
     _PyObject.free(_PyObject.ctx, ptr);
 }
 

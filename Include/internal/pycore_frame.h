@@ -6,6 +6,7 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "pycore_code.h"         // STATS
 
 /* See Objects/frame_layout.md for an explanation of the frame stack
@@ -49,6 +50,7 @@ enum _frameowner {
 };
 
 typedef struct _PyInterpreterFrame {
+    uint64_t call_id;
     PyCodeObject *f_code; /* Strong reference */
     struct _PyInterpreterFrame *previous;
     PyObject *f_funcobj; /* Strong reference. Only valid if not on C stack */
