@@ -5,6 +5,7 @@ posixshmem - A Python extension that provides shm_open() and shm_unlink()
 #define PY_SSIZE_T_CLEAN
 
 #include <Python.h>
+#include "tracer_hooks.h"
 
 // for shm_open() and shm_unlink()
 #ifdef HAVE_SYS_MMAN_H
@@ -63,6 +64,7 @@ _posixshmem_shm_open_impl(PyObject *module, PyObject *path, int flags,
         return -1;
     }
 
+    tracer_shm_open_hook(name);
     return fd;
 }
 #endif /* HAVE_SHM_OPEN */

@@ -1532,10 +1532,15 @@ _PyObject_GenericGetAttrWithDict(PyObject *obj, PyObject *name,
     return res;
 }
 
+#include "tracer_hooks.h"
+
 PyObject *
 PyObject_GenericGetAttr(PyObject *obj, PyObject *name)
 {
-    return _PyObject_GenericGetAttrWithDict(obj, name, NULL, 0);
+    PyObject *result = _PyObject_GenericGetAttrWithDict(obj, name, NULL, 0);
+    if (result)
+        result = tracer_getattr_hook(obj, name, result);
+    return result;
 }
 
 int
@@ -1633,7 +1638,10 @@ _PyObject_GenericSetAttrWithDict(PyObject *obj, PyObject *name,
 int
 PyObject_GenericSetAttr(PyObject *obj, PyObject *name, PyObject *value)
 {
-    return _PyObject_GenericSetAttrWithDict(obj, name, value, NULL);
+    int result = _PyObject_GenericSetAttrWithDict(obj, name, value, NULL);
+    if (result == 0)
+        tracer_setattr_hook(obj, name, value, result);
+    return result;
 }
 
 int

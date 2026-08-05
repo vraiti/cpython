@@ -5440,6 +5440,8 @@ object_init(PyObject *self, PyObject *args, PyObject *kwds)
     return 0;
 }
 
+#include "tracer_hooks.h"
+
 static PyObject *
 object_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
@@ -5511,6 +5513,7 @@ object_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
         Py_DECREF(obj);
         return NULL;
     }
+    tracer_object_new_hook(obj, type);
     return obj;
 }
 

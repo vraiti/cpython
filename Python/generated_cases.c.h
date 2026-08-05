@@ -20,6 +20,8 @@
             else if (_Py_atomic_load_relaxed_int32(&tstate->interp->ceval.eval_breaker) && oparg < 2) {
                 goto handle_eval_breaker;
             }
+            if (oparg == 0)
+                tracer_py_call_hook(frame);
             #line 24 "Python/generated_cases.c.h"
             DISPATCH();
         }
@@ -930,6 +932,7 @@
         TARGET(RETURN_VALUE) {
             PyObject *retval = stack_pointer[-1];
             #line 643 "Python/bytecodes.c"
+            tracer_py_return_hook(frame);
             STACK_SHRINK(1);
             assert(EMPTY());
             _PyFrame_SetStackPointer(frame, stack_pointer);
@@ -969,6 +972,7 @@
 
         TARGET(RETURN_CONST) {
             #line 677 "Python/bytecodes.c"
+            tracer_py_return_hook(frame);
             PyObject *retval = GETITEM(frame->f_code->co_consts, oparg);
             Py_INCREF(retval);
             assert(EMPTY());
@@ -1596,6 +1600,7 @@
             Py_DECREF(v);
             #line 1151 "Python/bytecodes.c"
             if (err) goto pop_1_error;
+            tracer_global_store_hook(GLOBALS(), name, v);
             #line 1600 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -1614,6 +1619,7 @@
                 }
                 goto error;
             }
+            tracer_global_delete_hook(GLOBALS(), name);
             #line 1618 "Python/generated_cases.c.h"
             DISPATCH();
         }
@@ -1699,6 +1705,7 @@
                     }
                 }
             }
+            tracer_global_load_hook(GLOBALS(), name, v);
             #line 1703 "Python/generated_cases.c.h"
             Py_DECREF(mod_or_class_dict);
             stack_pointer[-1] = v;
@@ -1830,6 +1837,7 @@
                 }
             }
             null = NULL;
+            tracer_global_load_hook(GLOBALS(), name, v);
             #line 1834 "Python/generated_cases.c.h"
             STACK_GROW(1);
             STACK_GROW(((oparg & 1) ? 1 : 0));
@@ -1855,6 +1863,7 @@
             Py_INCREF(res);
             STAT_INC(LOAD_GLOBAL, hit);
             null = NULL;
+            tracer_global_load_hook(GLOBALS(), GETITEM(frame->f_code->co_names, oparg>>1), res);
             #line 1859 "Python/generated_cases.c.h"
             STACK_GROW(1);
             STACK_GROW(((oparg & 1) ? 1 : 0));
@@ -1984,6 +1993,8 @@
                 if (true) goto error;
             }
             Py_INCREF(value);
+            tracer_deref_load_hook(cell,
+                    PyTuple_GET_ITEM(frame->f_code->co_localsplusnames, oparg), value);
             #line 1988 "Python/generated_cases.c.h"
             STACK_GROW(1);
             stack_pointer[-1] = value;
@@ -1997,6 +2008,8 @@
             PyObject *oldobj = PyCell_GET(cell);
             PyCell_SET(cell, v);
             Py_XDECREF(oldobj);
+            tracer_deref_store_hook(cell,
+                    PyTuple_GET_ITEM(frame->f_code->co_localsplusnames, oparg), v);
             #line 2001 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -3047,7 +3060,9 @@
             PREDICTED(POP_JUMP_IF_FALSE);
             PyObject *cond = stack_pointer[-1];
             #line 2166 "Python/bytecodes.c"
+            int _branch_taken = 0;
             if (Py_IsFalse(cond)) {
+                _branch_taken = 1;
                 JUMPBY(oparg);
             }
             else if (!Py_IsTrue(cond)) {
@@ -3056,12 +3071,14 @@
                 Py_DECREF(cond);
             #line 2172 "Python/bytecodes.c"
                 if (err == 0) {
+                    _branch_taken = 1;
                     JUMPBY(oparg);
                 }
                 else {
                     if (err < 0) goto pop_1_error;
                 }
             }
+            tracer_branch_hook(frame, _branch_taken);
             #line 3066 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -3070,7 +3087,9 @@
         TARGET(POP_JUMP_IF_TRUE) {
             PyObject *cond = stack_pointer[-1];
             #line 2182 "Python/bytecodes.c"
+            int _branch_taken = 0;
             if (Py_IsTrue(cond)) {
+                _branch_taken = 1;
                 JUMPBY(oparg);
             }
             else if (!Py_IsFalse(cond)) {
@@ -3079,12 +3098,14 @@
                 Py_DECREF(cond);
             #line 2188 "Python/bytecodes.c"
                 if (err > 0) {
+                    _branch_taken = 1;
                     JUMPBY(oparg);
                 }
                 else {
                     if (err < 0) goto pop_1_error;
                 }
             }
+            tracer_branch_hook(frame, _branch_taken);
             #line 3089 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -3093,12 +3114,15 @@
         TARGET(POP_JUMP_IF_NOT_NONE) {
             PyObject *value = stack_pointer[-1];
             #line 2198 "Python/bytecodes.c"
+            int _branch_taken = 0;
             if (!Py_IsNone(value)) {
             #line 3098 "Python/generated_cases.c.h"
                 Py_DECREF(value);
             #line 2200 "Python/bytecodes.c"
+                _branch_taken = 1;
                 JUMPBY(oparg);
             }
+            tracer_branch_hook(frame, _branch_taken);
             #line 3103 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -3107,7 +3131,9 @@
         TARGET(POP_JUMP_IF_NONE) {
             PyObject *value = stack_pointer[-1];
             #line 2205 "Python/bytecodes.c"
+            int _branch_taken = 0;
             if (Py_IsNone(value)) {
+                _branch_taken = 1;
                 JUMPBY(oparg);
             }
             else {
@@ -3115,6 +3141,7 @@
                 Py_DECREF(value);
             #line 2210 "Python/bytecodes.c"
             }
+            tracer_branch_hook(frame, _branch_taken);
             #line 3119 "Python/generated_cases.c.h"
             STACK_SHRINK(1);
             DISPATCH();
@@ -3299,10 +3326,12 @@
                 STACK_SHRINK(1);
                 /* Jump forward oparg, then skip following END_FOR instruction */
                 JUMPBY(INLINE_CACHE_ENTRIES_FOR_ITER + oparg + 1);
+                tracer_branch_hook(frame, 1);
                 DISPATCH();
             }
             // Common case: no jump, leave it to the code generator
             #line 3306 "Python/generated_cases.c.h"
+            tracer_branch_hook(frame, 0);
             STACK_GROW(1);
             stack_pointer[-1] = next;
             next_instr += 1;
@@ -3360,10 +3389,12 @@
             STACK_SHRINK(1);
             /* Jump forward oparg, then skip following END_FOR instruction */
             JUMPBY(INLINE_CACHE_ENTRIES_FOR_ITER + oparg + 1);
+            tracer_branch_hook(frame, 1);
             DISPATCH();
         end_for_iter_list:
             // Common case: no jump, leave it to the code generator
             #line 3367 "Python/generated_cases.c.h"
+            tracer_branch_hook(frame, 0);
             STACK_GROW(1);
             stack_pointer[-1] = next;
             next_instr += 1;
@@ -3390,10 +3421,12 @@
             STACK_SHRINK(1);
             /* Jump forward oparg, then skip following END_FOR instruction */
             JUMPBY(INLINE_CACHE_ENTRIES_FOR_ITER + oparg + 1);
+            tracer_branch_hook(frame, 1);
             DISPATCH();
         end_for_iter_tuple:
             // Common case: no jump, leave it to the code generator
             #line 3397 "Python/generated_cases.c.h"
+            tracer_branch_hook(frame, 0);
             STACK_GROW(1);
             stack_pointer[-1] = next;
             next_instr += 1;
@@ -3412,6 +3445,7 @@
                 Py_DECREF(r);
                 // Jump over END_FOR instruction.
                 JUMPBY(INLINE_CACHE_ENTRIES_FOR_ITER + oparg + 1);
+                tracer_branch_hook(frame, 1);
                 DISPATCH();
             }
             long value = r->start;
@@ -3422,6 +3456,7 @@
                 goto error;
             }
             #line 3425 "Python/generated_cases.c.h"
+            tracer_branch_hook(frame, 0);
             STACK_GROW(1);
             stack_pointer[-1] = next;
             next_instr += 1;
@@ -3767,10 +3802,12 @@
                 DISPATCH_INLINED(new_frame);
             }
             /* Callable is not a normal Python function */
+            tracer_c_call_hook(callable, NULL);
             res = PyObject_Vectorcall(
                 callable, args,
                 positional_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 kwnames);
+            tracer_c_return_hook(frame);
             if (opcode == INSTRUMENTED_CALL) {
                 PyObject *arg = total_args == 0 ?
                     &_PyInstrumentation_MISSING : PEEK(total_args);
@@ -4034,7 +4071,9 @@
                 goto error;
             }
             PyObject *arg = args[0];
+            tracer_c_call_hook(callable, PyCFunction_GET_SELF(callable));
             res = _PyCFunction_TrampolineCall(cfunc, PyCFunction_GET_SELF(callable), arg);
+            tracer_c_return_hook(frame);
             _Py_LeaveRecursiveCallTstate(tstate);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
 
@@ -4070,10 +4109,12 @@
             STAT_INC(CALL, hit);
             PyCFunction cfunc = PyCFunction_GET_FUNCTION(callable);
             /* res = func(self, args, nargs) */
+            tracer_c_call_hook(callable, PyCFunction_GET_SELF(callable));
             res = ((_PyCFunctionFast)(void(*)(void))cfunc)(
                 PyCFunction_GET_SELF(callable),
                 args,
                 total_args);
+            tracer_c_return_hook(frame);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
 
             /* Free the arguments. */
@@ -4118,12 +4159,14 @@
             _PyCFunctionFastWithKeywords cfunc =
                 (_PyCFunctionFastWithKeywords)(void(*)(void))
                 PyCFunction_GET_FUNCTION(callable);
+            tracer_c_call_hook(callable, PyCFunction_GET_SELF(callable));
             res = cfunc(
                 PyCFunction_GET_SELF(callable),
                 args,
                 total_args - KWNAMES_LEN(),
                 kwnames
             );
+            tracer_c_return_hook(frame);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
             kwnames = NULL;
 
@@ -4232,9 +4275,11 @@
             assert(self != NULL);
             DEOPT_IF(!PyList_Check(self), CALL);
             STAT_INC(CALL, hit);
+            tracer_c_call_hook(method, self);
             if (_PyList_AppendTakeRef((PyListObject *)self, args[0]) < 0) {
                 goto pop_1_error;  // Since arg is DECREF'ed already
             }
+            tracer_c_return_hook(frame);
             Py_DECREF(self);
             Py_DECREF(method);
             STACK_SHRINK(3);
@@ -4273,7 +4318,9 @@
             if (_Py_EnterRecursiveCallTstate(tstate, " while calling a Python object")) {
                 goto error;
             }
+            tracer_c_call_hook((PyObject *)callable, self);
             res = _PyCFunction_TrampolineCall(cfunc, self, arg);
+            tracer_c_return_hook(frame);
             _Py_LeaveRecursiveCallTstate(tstate);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
             Py_DECREF(self);
@@ -4312,7 +4359,9 @@
             int nargs = total_args - 1;
             _PyCFunctionFastWithKeywords cfunc =
                 (_PyCFunctionFastWithKeywords)(void(*)(void))meth->ml_meth;
+            tracer_c_call_hook((PyObject *)callable, self);
             res = cfunc(self, args + 1, nargs - KWNAMES_LEN(), kwnames);
+            tracer_c_return_hook(frame);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
             kwnames = NULL;
 
@@ -4358,7 +4407,9 @@
             if (_Py_EnterRecursiveCallTstate(tstate, " while calling a Python object")) {
                 goto error;
             }
+            tracer_c_call_hook((PyObject *)callable, self);
             res = _PyCFunction_TrampolineCall(cfunc, self, NULL);
+            tracer_c_return_hook(frame);
             _Py_LeaveRecursiveCallTstate(tstate);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
             Py_DECREF(self);
@@ -4397,7 +4448,9 @@
             _PyCFunctionFast cfunc =
                 (_PyCFunctionFast)(void(*)(void))meth->ml_meth;
             int nargs = total_args - 1;
+            tracer_c_call_hook((PyObject *)callable, self);
             res = cfunc(self, args + 1, nargs);
+            tracer_c_return_hook(frame);
             assert((res != NULL) ^ (_PyErr_Occurred(tstate) != NULL));
             /* Clear the stack of the arguments. */
             for (int i = 0; i < total_args; i++) {
@@ -4486,7 +4539,9 @@
                     frame->return_offset = 0;
                     DISPATCH_INLINED(new_frame);
                 }
+                tracer_c_call_hook(func, NULL);
                 result = PyObject_Call(func, callargs, kwargs);
+                tracer_c_return_hook(frame);
             }
             #line 4492 "Python/generated_cases.c.h"
             Py_DECREF(func);

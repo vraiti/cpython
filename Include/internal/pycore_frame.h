@@ -49,6 +49,7 @@ enum _frameowner {
 };
 
 typedef struct _PyInterpreterFrame {
+    uint64_t call_id;
     PyCodeObject *f_code; /* Strong reference */
     struct _PyInterpreterFrame *previous;
     PyObject *f_funcobj; /* Strong reference. Only valid if not on C stack */
@@ -120,6 +121,7 @@ _PyFrame_Initialize(
     _PyInterpreterFrame *frame, PyFunctionObject *func,
     PyObject *locals, PyCodeObject *code, int null_locals_from)
 {
+    frame->call_id = 0;
     frame->f_funcobj = (PyObject *)func;
     frame->f_code = (PyCodeObject *)Py_NewRef(code);
     frame->f_builtins = func->func_builtins;

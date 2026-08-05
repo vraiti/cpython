@@ -16,6 +16,8 @@
 #if defined(HAVE_GETPID) && defined(HAVE_UNISTD_H)
 #  include <unistd.h>             // getpid()
 #endif
+#include "_tracer/hook.h"
+#include "_tracer/records.h"
 #ifdef MS_WINDOWS
 #  include <windows.h>            // STATUS_CONTROL_C_EXIT
 #endif
@@ -621,6 +623,30 @@ pymain_run_python(int *exitcode)
     _PyInterpreterState_SetRunningMain(interp);
     assert(!PyErr_Occurred());
 
+    {
+        const char *tracer_cfg = getenv("PYTHON_TRACER_CONFIG");
+        if (tracer_cfg && tracer_cfg[0]) {
+            PyObject *mod = PyImport_ImportModule("tracer._bootstrap");
+            if (mod) {
+                PyObject *res = PyObject_CallMethod(mod, "init", NULL);
+                Py_XDECREF(res);
+                if (PyErr_Occurred()) {
+                    fprintf(stderr, "tracer: init failed\n");
+                    PyErr_Print();
+                    *exitcode = 1;
+                    Py_DECREF(mod);
+                    goto done;
+                }
+                Py_DECREF(mod);
+            } else {
+                fprintf(stderr, "tracer: could not import tracer._bootstrap\n");
+                PyErr_Print();
+                *exitcode = 1;
+                goto done;
+            }
+        }
+    }
+
     if (config->run_command) {
         *exitcode = pymain_run_command(config->run_command);
     }
@@ -644,6 +670,15 @@ error:
     *exitcode = pymain_exit_err_print();
 
 done:
+    if (g_state.enabled) {
+        g_state.enabled = 0;
+        const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
+        if (outdir && g_state.db) {
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%d.db", outdir, getpid());
+            tracer_serialize_db((DatabaseObject *)g_state.db, path);
+        }
+    }
     _PyInterpreterState_SetNotRunningMain(interp);
     Py_XDECREF(main_importer_path);
 }

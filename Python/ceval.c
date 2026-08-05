@@ -37,6 +37,8 @@
 #include <ctype.h>
 #include <stdbool.h>
 
+#include "tracer_hooks.h"
+
 #ifdef Py_DEBUG
    /* For debugging the interpreter: */
 #  define LLTRACE  1      /* Low-level trace feature */

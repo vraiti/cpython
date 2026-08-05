@@ -145,6 +145,8 @@ PyObject_LengthHint(PyObject *o, Py_ssize_t defaultvalue)
     return res;
 }
 
+#include "tracer_hooks.h"
+
 PyObject *
 PyObject_GetItem(PyObject *o, PyObject *key)
 {
@@ -156,6 +158,8 @@ PyObject_GetItem(PyObject *o, PyObject *key)
     if (m && m->mp_subscript) {
         PyObject *item = m->mp_subscript(o, key);
         assert(_Py_CheckSlotResult(o, "__getitem__", item != NULL));
+        if (item)
+            item = tracer_getitem_hook(o, key, item);
         return item;
     }
 
@@ -166,7 +170,10 @@ PyObject_GetItem(PyObject *o, PyObject *key)
             key_value = PyNumber_AsSsize_t(key, PyExc_IndexError);
             if (key_value == -1 && PyErr_Occurred())
                 return NULL;
-            return PySequence_GetItem(o, key_value);
+            PyObject *item = PySequence_GetItem(o, key_value);
+            if (item)
+                item = tracer_getitem_hook(o, key, item);
+            return item;
         }
         else {
             return type_error("sequence index must "
@@ -211,6 +218,8 @@ PyObject_SetItem(PyObject *o, PyObject *key, PyObject *value)
     if (m && m->mp_ass_subscript) {
         int res = m->mp_ass_subscript(o, key, value);
         assert(_Py_CheckSlotResult(o, "__setitem__", res >= 0));
+        if (res == 0)
+            tracer_setitem_hook(o, key, value, res);
         return res;
     }
 
@@ -220,7 +229,10 @@ PyObject_SetItem(PyObject *o, PyObject *key, PyObject *value)
             key_value = PyNumber_AsSsize_t(key, PyExc_IndexError);
             if (key_value == -1 && PyErr_Occurred())
                 return -1;
-            return PySequence_SetItem(o, key_value, value);
+            int res = PySequence_SetItem(o, key_value, value);
+            if (res == 0)
+                tracer_setitem_hook(o, key, value, res);
+            return res;
         }
         else if (Py_TYPE(o)->tp_as_sequence->sq_ass_item) {
             type_error("sequence index must be "
