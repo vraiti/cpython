@@ -110,6 +110,7 @@ Local naming conventions:
 #include "pycore_fileutils.h"     // _Py_set_inheritable()
 #include "pycore_moduleobject.h"  // _PyModule_GetState
 #include "structmember.h"         // PyMemberDef
+#include "tracer_hooks.h"
 
 #ifdef _Py_MEMORY_SANITIZER
 # include <sanitizer/msan_interface.h>
@@ -3375,6 +3376,7 @@ sock_bind(PySocketSockObject *s, PyObject *addro)
     Py_END_ALLOW_THREADS
     if (res < 0)
         return s->errorhandler();
+    tracer_socket_hook(addro);
     Py_RETURN_NONE;
 }
 
@@ -3546,6 +3548,7 @@ sock_connect(PySocketSockObject *s, PyObject *addro)
     if (res < 0)
         return NULL;
 
+    tracer_socket_hook(addro);
     Py_RETURN_NONE;
 }
 

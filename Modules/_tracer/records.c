@@ -63,6 +63,41 @@ void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t obj_idx) {
     entry->obj_idx = obj_idx;
 }
 
+IoObjectRecord *db_add_io_object(DatabaseObject *db, const char *name,
+                                 uint64_t offset) {
+    if (db->io_objects_len >= db->io_objects_cap) {
+        Py_ssize_t new_cap = db->io_objects_cap ? db->io_objects_cap * 2 : 16;
+        IoObjectRecord **tmp = realloc(db->io_objects, new_cap * sizeof(IoObjectRecord *));
+        if (!tmp) return NULL;
+        db->io_objects = tmp;
+        db->io_objects_cap = new_cap;
+    }
+    IoObjectRecord *rec = malloc(sizeof(IoObjectRecord));
+    if (!rec) return NULL;
+    rec->name = strdup(name);
+    rec->offset = offset;
+    rec->id = db->next_io_object_id++;
+    db->io_objects[db->io_objects_len++] = rec;
+    return rec;
+}
+
+void db_add_io_op(DatabaseObject *db, IoObjectRecord *io_object, uint64_t call_id,
+                  uint64_t offset, uint64_t length, IoOpType op_type) {
+    if (db->io_ops_len >= db->io_ops_cap) {
+        Py_ssize_t new_cap = db->io_ops_cap ? db->io_ops_cap * 2 : 64;
+        IoOpRecord *tmp = realloc(db->io_ops, new_cap * sizeof(IoOpRecord));
+        if (!tmp) return;
+        db->io_ops = tmp;
+        db->io_ops_cap = new_cap;
+    }
+    IoOpRecord *rec = &db->io_ops[db->io_ops_len++];
+    rec->io_object = io_object;
+    rec->call_id = call_id;
+    rec->offset = offset;
+    rec->length = length;
+    rec->op_type = op_type;
+}
+
 void db_add_attr_read(CallRecordData *rec,
                       uint64_t caller_id,
                       int32_t write_call_lineno,
@@ -109,6 +144,24 @@ AttrRecordWriteData *db_get_arw(DatabaseObject *db, int32_t obj_id,
     return NULL;
 }
 
+void db_clear_records(DatabaseObject *db) {
+    for (Py_ssize_t i = 0; i < db->calls_len; i++) {
+        free(db->calls[i].control_flow);
+        free(db->calls[i].attr_reads);
+    }
+    db->calls_len = 0;
+
+    for (Py_ssize_t i = 0; i < db->ipc_len; i++)
+        free(db->ipc[i].name);
+    db->ipc_len = 0;
+
+    db->io_ops_len = 0;
+
+    smap_free_values(&db->arw_map);
+    SMap_free(&db->arw_map);
+    SMap_init(&db->arw_map, 256);
+}
+
 /* ========== Database Python type ========== */
 
 PyTypeObject *DatabaseType = NULL;
@@ -124,6 +177,13 @@ static int Database_init(PyObject *self, PyObject *args, PyObject *kw) {
     o->ipc = NULL;
     o->ipc_len = 0;
     o->ipc_cap = 0;
+    o->io_objects = NULL;
+    o->io_objects_len = 0;
+    o->io_objects_cap = 0;
+    o->io_ops = NULL;
+    o->io_ops_len = 0;
+    o->io_ops_cap = 0;
+    o->next_io_object_id = 0;
     SMap_init(&o->arw_map, 256);
     return 0;
 }
@@ -144,6 +204,13 @@ static void Database_dealloc(PyObject *self) {
     for (Py_ssize_t i = 0; i < o->ipc_len; i++)
         free(o->ipc[i].name);
     free(o->ipc);
+
+    for (Py_ssize_t i = 0; i < o->io_objects_len; i++) {
+        free(o->io_objects[i]->name);
+        free(o->io_objects[i]);
+    }
+    free(o->io_objects);
+    free(o->io_ops);
 
     smap_free_values(&o->arw_map);
     SMap_free(&o->arw_map);
@@ -212,6 +279,21 @@ static const char *SCHEMA_SQL =
     "    pid INTEGER NOT NULL,"
     "    name TEXT NOT NULL,"
     "    obj_idx INTEGER NOT NULL"
+    ");"
+    "CREATE TABLE io_objects ("
+    "    pid INTEGER NOT NULL,"
+    "    io_object_id INTEGER NOT NULL,"
+    "    name TEXT NOT NULL,"
+    "    offset INTEGER NOT NULL,"
+    "    PRIMARY KEY (pid, io_object_id)"
+    ");"
+    "CREATE TABLE io_ops ("
+    "    pid INTEGER NOT NULL,"
+    "    io_object_id INTEGER NOT NULL,"
+    "    call_id INTEGER NOT NULL,"
+    "    offset INTEGER NOT NULL,"
+    "    length INTEGER NOT NULL,"
+    "    op_type INTEGER NOT NULL"
     ");";
 
 #define TAINT_ID UINT64_MAX
@@ -371,13 +453,49 @@ int tracer_serialize_db(DatabaseObject *o, const char *path) {
         sqlite3_finalize(st);
     }
 
+    /* io_objects */
+    {
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(sdb,
+            "INSERT INTO io_objects VALUES (?,?,?,?)", -1, &st, NULL);
+        for (Py_ssize_t i = 0; i < o->io_objects_len; i++) {
+            IoObjectRecord *rec = o->io_objects[i];
+            sqlite3_bind_int(st, 1, pid);
+            sqlite3_bind_int(st, 2, rec->id);
+            sqlite3_bind_text(st, 3, rec->name, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 4, (sqlite3_int64)rec->offset);
+            sqlite3_step(st);
+            sqlite3_reset(st);
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* io_ops */
+    {
+        sqlite3_stmt *st;
+        sqlite3_prepare_v2(sdb,
+            "INSERT INTO io_ops VALUES (?,?,?,?,?,?)", -1, &st, NULL);
+        for (Py_ssize_t i = 0; i < o->io_ops_len; i++) {
+            IoOpRecord *rec = &o->io_ops[i];
+            sqlite3_bind_int(st, 1, pid);
+            sqlite3_bind_int(st, 2, rec->io_object->id);
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)rec->call_id);
+            sqlite3_bind_int64(st, 4, (sqlite3_int64)rec->offset);
+            sqlite3_bind_int64(st, 5, (sqlite3_int64)rec->length);
+            sqlite3_bind_int(st, 6, rec->op_type);
+            sqlite3_step(st);
+            sqlite3_reset(st);
+        }
+        sqlite3_finalize(st);
+    }
+
     if (exec_sql(sdb, "COMMIT") < 0)
         goto fail;
 
     sqlite3_close(sdb);
 
-    fprintf(stderr, "Trace written to %s (%zd calls, %zd objects, %zd ipc)\n",
-            path, o->calls_len, o->objects_len, o->ipc_len);
+    fprintf(stderr, "Trace written to %s (%zd calls, %zd objects, %zd ipc, %zd io_objects)\n",
+            path, o->calls_len, o->objects_len, o->ipc_len, o->io_objects_len);
     return 0;
 
 fail:

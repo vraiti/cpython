@@ -20,6 +20,7 @@
 #endif
 #include <stddef.h> /* For offsetof */
 #include "_iomodule.h"
+#include "tracer_hooks.h"
 
 /*
  * Known likely problems:
@@ -491,6 +492,8 @@ _io_FileIO___init___impl(fileio *self, PyObject *nameobj, const char *mode,
         Py_DECREF(pos);
     }
 
+    tracer_fileio_open_hook((PyObject *)self, self->fd);
+
     goto done;
 
  error:
@@ -661,6 +664,7 @@ _io_FileIO_readinto_impl(fileio *self, PyTypeObject *cls, Py_buffer *buffer)
         return NULL;
     }
 
+    tracer_fileio_read_hook((PyObject *)self, self->fd, n);
     return PyLong_FromSsize_t(n);
 }
 
@@ -779,6 +783,7 @@ _io_FileIO_readall_impl(fileio *self)
         if (_PyBytes_Resize(&result, bytes_read) < 0)
             return NULL;
     }
+    tracer_fileio_read_hook((PyObject *)self, self->fd, bytes_read);
     return result;
 }
 
@@ -834,6 +839,8 @@ _io_FileIO_read_impl(fileio *self, PyTypeObject *cls, Py_ssize_t size)
         return NULL;
     }
 
+    tracer_fileio_read_hook((PyObject *)self, self->fd, n);
+
     if (n != size) {
         if (_PyBytes_Resize(&bytes, n) < 0) {
             Py_CLEAR(bytes);
@@ -883,6 +890,7 @@ _io_FileIO_write_impl(fileio *self, PyTypeObject *cls, Py_buffer *b)
         return NULL;
     }
 
+    tracer_fileio_write_hook((PyObject *)self, self->fd, n);
     return PyLong_FromSsize_t(n);
 }
 

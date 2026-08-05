@@ -8,6 +8,7 @@
  */
 
 #include "multiprocessing.h"
+#include "tracer_hooks.h"
 
 #ifdef HAVE_MP_SEMAPHORE
 
@@ -375,6 +376,7 @@ _multiprocessing_SemLock_acquire_impl(SemLockObject *self, int blocking,
 
     ++self->count;
     self->last_tid = PyThread_get_thread_ident();
+    tracer_sem_acquire_hook(self->name);
 
     Py_RETURN_TRUE;
 }
@@ -443,6 +445,7 @@ _multiprocessing_SemLock_release_impl(SemLockObject *self)
         return PyErr_SetFromErrno(PyExc_OSError);
 
     --self->count;
+    tracer_sem_release_hook(self->name);
     Py_RETURN_NONE;
 }
 

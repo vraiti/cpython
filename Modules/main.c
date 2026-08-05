@@ -18,6 +18,7 @@
 #endif
 #include "_tracer/hook.h"
 #include "_tracer/records.h"
+#include "_tracer/tracer_hooks.h"
 #ifdef MS_WINDOWS
 #  include <windows.h>            // STATUS_CONTROL_C_EXIT
 #endif
@@ -626,7 +627,7 @@ pymain_run_python(int *exitcode)
     {
         const char *tracer_cfg = getenv("PYTHON_TRACER_CONFIG");
         if (tracer_cfg && tracer_cfg[0]) {
-            PyObject *mod = PyImport_ImportModule("tracer._bootstrap");
+            PyObject *mod = PyImport_ImportModule("d3g._bootstrap");
             if (mod) {
                 PyObject *res = PyObject_CallMethod(mod, "init", NULL);
                 Py_XDECREF(res);
@@ -638,8 +639,9 @@ pymain_run_python(int *exitcode)
                     goto done;
                 }
                 Py_DECREF(mod);
+                tracer_enumerate_fds();
             } else {
-                fprintf(stderr, "tracer: could not import tracer._bootstrap\n");
+                fprintf(stderr, "tracer: could not import d3g._bootstrap\n");
                 PyErr_Print();
                 *exitcode = 1;
                 goto done;

@@ -79,6 +79,7 @@ my_getpagesize(void)
 
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
+#include "tracer_hooks.h"
 #endif /* HAVE_SYS_TYPES_H */
 
 /* Prefer MAP_ANONYMOUS since MAP_ANON is deprecated according to man page. */
@@ -260,6 +261,7 @@ mmap_read_byte_method(mmap_object *self,
         PyErr_SetString(PyExc_ValueError, "read byte out of range");
         return NULL;
     }
+    tracer_mmap_read_hook((PyObject *)self, (long long)self->pos, 1);
     return PyLong_FromLong((unsigned char)self->data[self->pos++]);
 }
 
@@ -282,6 +284,7 @@ mmap_read_line_method(mmap_object *self,
         eol = self->data + self->size;
     else
         ++eol; /* advance past newline */
+    tracer_mmap_read_hook((PyObject *)self, (long long)self->pos, (long long)(eol - start));
     result = PyBytes_FromStringAndSize(start, (eol - start));
     self->pos += (eol - start);
     return result;
@@ -303,6 +306,7 @@ mmap_read_method(mmap_object *self,
     remaining = (self->pos < self->size) ? self->size - self->pos : 0;
     if (num_bytes < 0 || num_bytes > remaining)
         num_bytes = remaining;
+    tracer_mmap_read_hook((PyObject *)self, (long long)self->pos, (long long)num_bytes);
     result = PyBytes_FromStringAndSize(&self->data[self->pos], num_bytes);
     self->pos += num_bytes;
     return result;
@@ -339,6 +343,8 @@ mmap_gfind(mmap_object *self,
 
         Py_ssize_t res;
         CHECK_VALID_OR_RELEASE(NULL, view);
+        if (end > start)
+            tracer_mmap_read_hook((PyObject *)self, (long long)start, (long long)(end - start));
         if (end < start) {
             res = -1;
         }
@@ -421,6 +427,7 @@ mmap_write_method(mmap_object *self,
     }
 
     CHECK_VALID_OR_RELEASE(NULL, data);
+    tracer_mmap_write_hook((PyObject *)self, (long long)self->pos, (long long)data.len);
     memcpy(&self->data[self->pos], data.buf, data.len);
     self->pos += data.len;
     PyBuffer_Release(&data);
@@ -442,6 +449,7 @@ mmap_write_byte_method(mmap_object *self,
 
     CHECK_VALID(NULL);
     if (self->pos < self->size) {
+        tracer_mmap_write_hook((PyObject *)self, (long long)self->pos, 1);
         self->data[self->pos++] = value;
         Py_RETURN_NONE;
     }
@@ -746,6 +754,8 @@ mmap_move_method(mmap_object *self, PyObject *args)
             goto bounds;
 
         CHECK_VALID(NULL);
+        tracer_mmap_read_hook((PyObject *)self, (long long)src, (long long)cnt);
+        tracer_mmap_write_hook((PyObject *)self, (long long)dest, (long long)cnt);
         memmove(&self->data[dest], &self->data[src], cnt);
 
         Py_RETURN_NONE;
@@ -950,6 +960,7 @@ mmap_item(mmap_object *self, Py_ssize_t i)
         PyErr_SetString(PyExc_IndexError, "mmap index out of range");
         return NULL;
     }
+    tracer_mmap_read_hook((PyObject *)self, (long long)i, 1);
     return PyBytes_FromStringAndSize(self->data + i, 1);
 }
 
@@ -969,6 +980,7 @@ mmap_subscript(mmap_object *self, PyObject *item)
             return NULL;
         }
         CHECK_VALID(NULL);
+        tracer_mmap_read_hook((PyObject *)self, (long long)i, 1);
         return PyLong_FromLong(Py_CHARMASK(self->data[i]));
     }
     else if (PySlice_Check(item)) {
@@ -982,7 +994,8 @@ mmap_subscript(mmap_object *self, PyObject *item)
         CHECK_VALID(NULL);
         if (slicelen <= 0)
             return PyBytes_FromStringAndSize("", 0);
-        else if (step == 1)
+        tracer_mmap_read_hook((PyObject *)self, (long long)start, (long long)slicelen);
+        if (step == 1)
             return PyBytes_FromStringAndSize(self->data + start,
                                               slicelen);
         else {
@@ -1034,6 +1047,7 @@ mmap_ass_item(mmap_object *self, Py_ssize_t i, PyObject *v)
     if (!is_writable(self))
         return -1;
     buf = PyBytes_AsString(v);
+    tracer_mmap_write_hook((PyObject *)self, (long long)i, 1);
     self->data[i] = buf[0];
     return 0;
 }
@@ -1079,6 +1093,7 @@ mmap_ass_subscript(mmap_object *self, PyObject *item, PyObject *value)
             return -1;
         }
         CHECK_VALID(-1);
+        tracer_mmap_write_hook((PyObject *)self, (long long)i, 1);
         self->data[i] = (char) v;
         return 0;
     }
@@ -1105,6 +1120,8 @@ mmap_ass_subscript(mmap_object *self, PyObject *item, PyObject *value)
         }
 
         CHECK_VALID_OR_RELEASE(-1, vbuf);
+        if (slicelen > 0)
+            tracer_mmap_write_hook((PyObject *)self, (long long)start, (long long)slicelen);
         if (slicelen == 0) {
         }
         else if (step == 1) {
@@ -1365,6 +1382,7 @@ new_mmap_object(PyTypeObject *type, PyObject *args, PyObject *kwdict)
         return NULL;
     }
     m_obj->access = (access_mode)access;
+    tracer_mmap_create_hook((PyObject *)m_obj, fd, (long long)offset);
     return (PyObject *)m_obj;
 }
 #endif /* UNIX */

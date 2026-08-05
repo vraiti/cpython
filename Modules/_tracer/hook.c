@@ -1,9 +1,13 @@
 #include "hook.h"
+#include "tracer_hooks.h"
 #include "containers/containers.h"
 #include "pycore_frame.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <dirent.h>
+#include <unistd.h>
 
 /* forward declarations */
 CallRecordData *current_record(void);
@@ -938,30 +942,249 @@ void tracer_c_return_hook(_PyInterpreterFrame *frame) {
     handle_c_return(frame_obj);
 }
 
-void tracer_shm_open_hook(const char *name) {
+static void record_ipc(const char *name) {
     if (!g_state.enabled) return;
     if (!g_state.db) return;
     PyFrameObject *frame = PyEval_GetFrame();
     if (!frame) return;
     uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == TAINT_ID) return;
+    if (call_id == 0 || call_id == UINT64_MAX) return;
     db_add_ipc_entry((DatabaseObject *)g_state.db, name, (int64_t)call_id);
+}
+
+void tracer_shm_open_hook(const char *name) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "shm:%s", name);
+    record_ipc(buf);
+}
+
+void tracer_pipe_hook(int fd_read, int fd_write) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "pipe:%d,%d", fd_read, fd_write);
+    record_ipc(buf);
+}
+
+void tracer_mkfifo_hook(const char *path) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "fifo:%s", path);
+    record_ipc(buf);
+}
+
+void tracer_socket_hook(PyObject *address) {
+    PyObject *repr = PyObject_Repr(address);
+    if (!repr) { PyErr_Clear(); return; }
+    const char *s = PyUnicode_AsUTF8(repr);
+    if (s) {
+        char buf[300];
+        snprintf(buf, sizeof(buf), "sock:%s", s);
+        record_ipc(buf);
+    }
+    Py_DECREF(repr);
+}
+
+void tracer_signal_hook(int signum) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "signal:%d", signum);
+    record_ipc(buf);
+}
+
+void tracer_mmap_create_hook(PyObject *mmap_obj, int fd, long long offset) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+
+    char path_buf[4096];
+    const char *backing;
+    if (fd == -1) {
+        static uint64_t anon_serial = 0;
+        snprintf(path_buf, sizeof(path_buf), "ANONYMOUS_%llu",
+                 (unsigned long long)anon_serial++);
+        backing = path_buf;
+    } else {
+        char proc_path[64];
+        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        ssize_t len = readlink(proc_path, path_buf, sizeof(path_buf) - 1);
+        if (len > 0) {
+            path_buf[len] = '\0';
+            backing = path_buf;
+        } else {
+            snprintf(path_buf, sizeof(path_buf), "fd:%d", fd);
+            backing = path_buf;
+        }
+    }
+
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+    IoObjectRecord *rec = db_add_io_object(db, backing, (uint64_t)offset);
+    if (rec) {
+        umap_set(&g_state.io_object_records, (uintptr_t)mmap_obj, (intptr_t)rec);
+    }
+}
+
+static IoObjectRecord *get_io_object_record(PyObject *obj) {
+    intptr_t val;
+    if (umap_get(&g_state.io_object_records, (uintptr_t)obj, &val))
+        return (IoObjectRecord *)val;
+    return NULL;
+}
+
+void tracer_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+
+    IoObjectRecord *rec = get_io_object_record(mmap_obj);
+    if (!rec) return;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) return;
+    uint64_t call_id = get_frame_call_id(frame);
+    if (call_id == 0 || call_id == UINT64_MAX) return;
+
+    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
+                 (uint64_t)offset, (uint64_t)length, IO_OP_READ);
+}
+
+void tracer_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+
+    IoObjectRecord *rec = get_io_object_record(mmap_obj);
+    if (!rec) return;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) return;
+    uint64_t call_id = get_frame_call_id(frame);
+    if (call_id == 0 || call_id == UINT64_MAX) return;
+
+    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
+                 (uint64_t)offset, (uint64_t)length, IO_OP_WRITE);
+}
+
+/* ---- inherited fd enumeration ---- */
+
+void tracer_enumerate_fds(void) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+
+    DIR *dir = opendir("/proc/self/fd");
+    if (!dir) return;
+
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        int fd = atoi(entry->d_name);
+        int dir_fd = dirfd(dir);
+        if (fd == dir_fd) continue;
+
+        char proc_path[64];
+        char path_buf[4096];
+        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        ssize_t len = readlink(proc_path, path_buf, sizeof(path_buf) - 1);
+        if (len <= 0) continue;
+        path_buf[len] = '\0';
+
+        db_add_io_object(db, path_buf, 0);
+    }
+    closedir(dir);
+}
+
+/* ---- semaphore hooks ---- */
+
+void tracer_sem_acquire_hook(const char *name) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "sem_acquire:%s", name ? name : "?");
+    record_ipc(buf);
+}
+
+void tracer_sem_release_hook(const char *name) {
+    char buf[300];
+    snprintf(buf, sizeof(buf), "sem_release:%s", name ? name : "?");
+    record_ipc(buf);
+}
+
+/* ---- file I/O hooks ---- */
+
+void tracer_fileio_open_hook(PyObject *fileio_obj, int fd) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+
+    char path_buf[4096];
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+    ssize_t len = readlink(proc_path, path_buf, sizeof(path_buf) - 1);
+    if (len > 0) {
+        path_buf[len] = '\0';
+    } else {
+        snprintf(path_buf, sizeof(path_buf), "fd:%d", fd);
+    }
+
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+    IoObjectRecord *rec = db_add_io_object(db, path_buf, 0);
+    if (rec) {
+        umap_set(&g_state.io_object_records, (uintptr_t)fileio_obj, (intptr_t)rec);
+    }
+}
+
+void tracer_fileio_read_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+    if (n <= 0) return;
+
+    IoObjectRecord *rec = get_io_object_record(fileio_obj);
+    if (!rec) return;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) return;
+    uint64_t call_id = get_frame_call_id(frame);
+    if (call_id == 0 || call_id == UINT64_MAX) return;
+
+    off_t pos = lseek(fd, 0, SEEK_CUR);
+    uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
+
+    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
+                 offset, (uint64_t)n, IO_OP_READ);
+}
+
+void tracer_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+    if (n <= 0) return;
+
+    IoObjectRecord *rec = get_io_object_record(fileio_obj);
+    if (!rec) return;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) return;
+    uint64_t call_id = get_frame_call_id(frame);
+    if (call_id == 0 || call_id == UINT64_MAX) return;
+
+    off_t pos = lseek(fd, 0, SEEK_CUR);
+    uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
+
+    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
+                 offset, (uint64_t)n, IO_OP_WRITE);
+}
+
+/* ---- fork child cleanup ---- */
+
+void tracer_after_fork_child_hook(void) {
+    if (!g_state.enabled) return;
+    if (!g_state.db) return;
+    db_clear_records((DatabaseObject *)g_state.db);
 }
 
 /* ---- Python-visible functions ---- */
 
 static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
-    static char *kwlist[] = {"hook", "prefixes", "db",
+    static char *kwlist[] = {"prefixes", "db",
                              "path_filter", "taint_patterns", NULL};
-    PyObject *hook, *prefixes_list, *db, *path_filter;
+    PyObject *prefixes_list, *db, *path_filter;
     PyObject *taint_patterns = Py_None;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOOO|O", kwlist,
-            &hook, &prefixes_list, &db, &path_filter, &taint_patterns))
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|O", kwlist,
+            &prefixes_list, &db, &path_filter, &taint_patterns))
         return NULL;
 
     /* clean up old state */
-    Py_XDECREF(g_state.hook_obj);
     Py_XDECREF(g_state.db);
     Py_XDECREF(g_state.filter);
     if (g_state.prefixes) {
@@ -976,10 +1199,9 @@ static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
     }
     umap_free(&g_state.scope_cache);
     umap_free(&g_state.object_extras);
+    umap_free(&g_state.io_object_records);
 
     /* set up new state */
-    Py_INCREF(hook);
-    g_state.hook_obj = hook;
     Py_INCREF(db);
     g_state.db = db;
     Py_INCREF(path_filter);
@@ -995,6 +1217,7 @@ static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
 
     umap_init(&g_state.scope_cache, 256);
     umap_init(&g_state.object_extras, 1024);
+    umap_init(&g_state.io_object_records, 16);
     SMap_free(&g_state.func_to_id);
     SMap_init(&g_state.func_to_id, 512);
     g_state.next_func_id = 0;

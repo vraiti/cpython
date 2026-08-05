@@ -41,7 +41,6 @@ typedef struct {
     uint64_t next_call_id;
     int enabled;
 
-    PyObject *hook_obj;
     PyObject *db;             /* DatabaseObject* */
     PyObject *filter;         /* PathFilterObject* */
 
@@ -58,6 +57,9 @@ typedef struct {
 
     /* Object extras: (uintptr_t)PyObject* -> (intptr_t)ObjectTraceData* */
     UMap object_extras;
+
+    /* I/O object tracking: (uintptr_t)PyObject* -> (intptr_t)IoObjectRecord* */
+    UMap io_object_records;
 } TraceState;
 
 extern TraceState g_state;

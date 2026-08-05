@@ -4,6 +4,7 @@
 /* XXX Signals should be recorded per thread, now we have thread state. */
 
 #include "Python.h"
+#include "tracer_hooks.h"
 #include "pycore_atomic.h"        // _Py_atomic_int
 #include "pycore_call.h"          // _PyObject_Call()
 #include "pycore_ceval.h"         // _PyEval_SignalReceived()
@@ -536,6 +537,7 @@ signal_signal_impl(PyObject *module, int signalnum, PyObject *handler)
 
     old_handler = get_handler(signalnum);
     set_handler(signalnum, Py_NewRef(handler));
+    tracer_signal_hook(signalnum);
 
     if (old_handler != NULL) {
         return old_handler;
