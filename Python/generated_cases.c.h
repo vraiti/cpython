@@ -5561,6 +5561,7 @@
             stack_pointer = _PyFrame_GetStackPointer(frame);
             if (matches) {
                 _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_branch_hook(frame, 2);
                 _PyStackRef tmp = exc_st;
                 exc_st = PyStackRef_NULL;
                 stack_pointer[-1] = exc_st;
@@ -6252,6 +6253,7 @@
             _PyStackRef awaitable;
             aiter = stack_pointer[-1];
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_branch_hook(frame, 0);
             PyObject *awaitable_o = _PyEval_GetANext(PyStackRef_AsPyObjectBorrow(aiter));
             stack_pointer = _PyFrame_GetStackPointer(frame);
             if (awaitable_o == NULL) {
@@ -7053,6 +7055,7 @@
                 stack_pointer = _PyFrame_GetStackPointer(frame);
                 if (matches) {
                     _PyFrame_SetStackPointer(frame, stack_pointer);
+                    d3g_branch_hook(frame, 2);
                     _PyStackRef tmp = exc_st;
                     exc_st = PyStackRef_NULL;
                     stack_pointer[-1] = exc_st;

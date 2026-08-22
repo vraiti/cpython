@@ -31,6 +31,12 @@ TRACER_API void d3g_signal_hook(int signum);
 TRACER_API void d3g_mmap_create_hook(PyObject *mmap_obj, int fd, long long offset);
 TRACER_API void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length);
 TRACER_API void d3g_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length);
+/* Buffer-protocol exports of hooked io objects (memoryview over mmap):
+ * export returns the IoObjectRecord of `exporter` (or NULL); the io hooks
+ * take that record and a byte range relative to the exporter's base. */
+TRACER_API void *d3g_buffer_export_hook(PyObject *exporter);
+TRACER_API void d3g_buffer_read_hook(void *record, long long offset, long long length);
+TRACER_API void d3g_buffer_write_hook(void *record, long long offset, long long length);
 TRACER_API void d3g_after_fork_child_hook(void);
 TRACER_API void d3g_fileio_open_hook(PyObject *fileio_obj, int fd);
 TRACER_API void d3g_fileio_read_hook(PyObject *fileio_obj, int fd, Py_ssize_t n);

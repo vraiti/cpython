@@ -13,6 +13,7 @@ typedef struct {
     int flags;          /* state flags */
     Py_ssize_t exports; /* number of direct memoryview exports */
     Py_buffer master; /* snapshot buffer obtained from the original exporter */
+    void *d3g_record; /* D3G IoObjectRecord of the exporter, or NULL */
 } _PyManagedBufferObject;
 
 

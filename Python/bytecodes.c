@@ -1292,6 +1292,10 @@ dummy_func(
         }
 
         inst(GET_ANEXT, (aiter -- aiter, awaitable)) {
+            /* D3G: one byte per `async for` iteration attempt; the attempt
+             * that raises StopAsyncIteration is followed by the 2 recorded
+             * in _END_ASYNC_FOR. */
+            d3g_branch_hook(frame, 0);
             PyObject *awaitable_o = _PyEval_GetANext(PyStackRef_AsPyObjectBorrow(aiter));
             if (awaitable_o == NULL) {
                 ERROR_NO_POP();
@@ -1476,6 +1480,7 @@ dummy_func(
             assert(exc && PyExceptionInstance_Check(exc));
             int matches = PyErr_GivenExceptionMatches(exc, PyExc_StopAsyncIteration);
             if (matches) {
+                d3g_branch_hook(frame, 2);  /* D3G: async for exhausted */
                 DECREF_INPUTS();
             }
             else {

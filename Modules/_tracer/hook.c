@@ -513,7 +513,9 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
         entry->branch_buf = realloc(entry->branch_buf, entry->branch_cap);
         if (!entry->branch_buf) return;
     }
-    entry->branch_buf[entry->branch_len++] = taken ? 1 : 0;
+    /* 0/1: conditional jump not taken/taken (FOR_ITER: next/exhausted);
+     * 2: `async for` exhausted (END_ASYNC_FOR). */
+    entry->branch_buf[entry->branch_len++] = (unsigned char)taken;
 }
 
 /* ---- item hooks (subscript operations) ---- */
@@ -1188,11 +1190,10 @@ static IoObjectRecord *get_io_object_record(PyObject *obj) {
     return NULL;
 }
 
-void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) {
+static void record_io_op(IoObjectRecord *rec, long long offset,
+                         long long length, IoOpType op) {
     if (!g_state.enabled) return;
     if (!g_state.db) return;
-
-    IoObjectRecord *rec = get_io_object_record(mmap_obj);
     if (!rec) return;
 
     /* Attribute to the nearest traced call, so events reached through
@@ -1200,28 +1201,41 @@ void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) 
      * are not dropped; current_record() returns NULL under taint. */
     CallRecordData *cur = current_record();
     if (!cur) return;
-    uint64_t call_id = cur->call_id;
 
-    writer_push_io_op(rec->id, call_id, (uint64_t)offset, (uint64_t)length,
-                      IO_OP_READ);
+    writer_push_io_op(rec->id, cur->call_id, (uint64_t)offset,
+                      (uint64_t)length, op);
+}
+
+void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) {
+    if (!g_state.enabled) return;
+    record_io_op(get_io_object_record(mmap_obj), offset, length, IO_OP_READ);
 }
 
 void d3g_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length) {
     if (!g_state.enabled) return;
-    if (!g_state.db) return;
+    record_io_op(get_io_object_record(mmap_obj), offset, length, IO_OP_WRITE);
+}
 
-    IoObjectRecord *rec = get_io_object_record(mmap_obj);
-    if (!rec) return;
+/* ---- buffer-protocol exports (memoryview) ----
+ *
+ * A memoryview over a hooked io object (SharedMemory.buf is
+ * memoryview(mmap)) bypasses the mmap methods entirely; the managed
+ * buffer remembers the exporter's record at export time and the
+ * memoryview access paths report byte ranges against it. */
 
-    /* Attribute to the nearest traced call, so events reached through
-     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
-     * are not dropped; current_record() returns NULL under taint. */
-    CallRecordData *cur = current_record();
-    if (!cur) return;
-    uint64_t call_id = cur->call_id;
+void *d3g_buffer_export_hook(PyObject *exporter) {
+    if (!g_state.enabled) return NULL;
+    if (!g_state.db) return NULL;
+    if (!exporter) return NULL;
+    return get_io_object_record(exporter);
+}
 
-    writer_push_io_op(rec->id, call_id, (uint64_t)offset, (uint64_t)length,
-                      IO_OP_WRITE);
+void d3g_buffer_read_hook(void *record, long long offset, long long length) {
+    record_io_op((IoObjectRecord *)record, offset, length, IO_OP_READ);
+}
+
+void d3g_buffer_write_hook(void *record, long long offset, long long length) {
+    record_io_op((IoObjectRecord *)record, offset, length, IO_OP_WRITE);
 }
 
 /* ---- inherited fd enumeration ---- */

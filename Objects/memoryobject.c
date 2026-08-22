@@ -12,6 +12,7 @@
 
 #include "Python.h"
 #include "pycore_abstract.h"      // _PyIndex_Check()
+#include "tracer_hooks.h"         // d3g_buffer_*_hook()
 #include "pycore_memoryobject.h"  // _PyManagedBuffer_Type
 #include "pycore_object.h"        // _PyObject_GC_UNTRACK()
 #include "pycore_strhex.h"        // _Py_strhex_with_sep()
@@ -80,6 +81,7 @@ mbuf_alloc(void)
     mbuf->flags = 0;
     mbuf->exports = 0;
     mbuf->master.obj = NULL;
+    mbuf->d3g_record = NULL;
     _PyObject_GC_TRACK(mbuf);
 
     return mbuf;
@@ -99,8 +101,26 @@ _PyManagedBuffer_FromObject(PyObject *base, int flags)
         Py_DECREF(mbuf);
         return NULL;
     }
+    mbuf->d3g_record = d3g_buffer_export_hook(mbuf->master.obj);
 
     return (PyObject *)mbuf;
+}
+
+/* Report a byte range of a view over a D3G-hooked exporter (see
+ * d3g_buffer_export_hook). Offsets are relative to the exporter's base so
+ * that slices and casts of the same managed buffer all map onto one io
+ * object. */
+static inline void
+d3g_view_io(PyMemoryViewObject *self, const void *ptr, Py_ssize_t len, int write)
+{
+    void *rec = self->mbuf->d3g_record;
+    if (rec == NULL)
+        return;
+    long long off = (long long)((const char *)ptr - (const char *)self->mbuf->master.buf);
+    if (write)
+        d3g_buffer_write_hook(rec, off, (long long)len);
+    else
+        d3g_buffer_read_hook(rec, off, (long long)len);
 }
 
 static void
@@ -1599,6 +1619,9 @@ memory_getbuf(PyObject *_self, Py_buffer *view, int flags)
     }
 
 
+    d3g_view_io(self, base->buf, base->len, 0);
+    if (REQ_WRITABLE(flags))
+        d3g_view_io(self, base->buf, base->len, 1);
     view->obj = Py_NewRef(self);
     FT_ATOMIC_ADD_SSIZE(self->exports, 1);
 
@@ -2245,6 +2268,7 @@ memoryview_tolist_impl(PyMemoryViewObject *self)
     fmt = adjust_fmt(view);
     if (fmt == NULL)
         return NULL;
+    d3g_view_io(self, view->buf, view->len, 0);
     if (view->ndim == 0) {
         return unpack_single(self, view->buf, fmt);
     }
@@ -2299,6 +2323,7 @@ memoryview_tobytes_impl(PyMemoryViewObject *self, const char *order)
         }
     }
 
+    d3g_view_io(self, src->buf, src->len, 0);
     bytes = PyBytes_FromStringAndSize(NULL, src->len);
     if (bytes == NULL)
         return NULL;
@@ -2344,6 +2369,7 @@ memoryview_hex_impl(PyMemoryViewObject *self, PyObject *sep,
     PyObject *ret;
 
     CHECK_RELEASED(self);
+    d3g_view_io(self, src->buf, src->len, 0);
 
     if (MV_C_CONTIGUOUS(self->flags)) {
         // Prevent 'self' from being freed if computing len(sep) mutates 'self'
@@ -2471,6 +2497,7 @@ memory_item(PyObject *_self, Py_ssize_t index)
         char *ptr = ptr_from_index(view, index);
         if (ptr == NULL)
             return NULL;
+        d3g_view_io(self, ptr, view->itemsize, 0);
         return unpack_single(self, ptr, fmt);
     }
 
@@ -2590,6 +2617,7 @@ memory_subscript(PyObject *_self, PyObject *key)
             const char *fmt = adjust_fmt(view);
             if (fmt == NULL)
                 return NULL;
+            d3g_view_io(self, view->buf, view->itemsize, 0);
             return unpack_single(self, view->buf, fmt);
         }
         else if (key == Py_Ellipsis) {
@@ -2666,6 +2694,7 @@ memory_ass_sub(PyObject *_self, PyObject *key, PyObject *value)
         if (key == Py_Ellipsis ||
             (PyTuple_Check(key) && PyTuple_GET_SIZE(key)==0)) {
             ptr = (char *)view->buf;
+            d3g_view_io(self, ptr, view->itemsize, 1);
             return pack_single(self, ptr, value, fmt);
         }
         else {
@@ -2688,6 +2717,7 @@ memory_ass_sub(PyObject *_self, PyObject *key, PyObject *value)
         ptr = ptr_from_index(view, index);
         if (ptr == NULL)
             return -1;
+        d3g_view_io(self, ptr, view->itemsize, 1);
         return pack_single(self, ptr, value, fmt);
     }
     /* one-dimensional: fast path */
@@ -2711,6 +2741,7 @@ memory_ass_sub(PyObject *_self, PyObject *key, PyObject *value)
             goto end_block;
         dest.len = dest.shape[0] * dest.itemsize;
 
+        d3g_view_io(self, dest.buf, dest.len, 1);
         ret = copy_single(self, &dest, &src);
 
     end_block:
