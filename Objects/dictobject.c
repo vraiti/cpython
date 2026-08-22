@@ -3361,6 +3361,8 @@ Fail:
 
 /* Methods */
 
+#include "tracer_hooks.h"
+
 static void
 dict_dealloc(PyObject *self)
 {
@@ -3371,6 +3373,7 @@ dict_dealloc(PyObject *self)
     if (_PyObject_ResurrectEnd(self)) {
         return;
     }
+    d3g_container_dealloc_hook(self);
     PyDictValues *values = mp->ma_values;
     PyDictKeysObject *keys = mp->ma_keys;
     Py_ssize_t i, n;

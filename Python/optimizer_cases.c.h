@@ -19,6 +19,10 @@
 
         /* _LOAD_BYTECODE is not a viable micro-op for tier 2 */
 
+        case _D3G_PY_CALL_HOOK: {
+            break;
+        }
+
         case _RESUME_CHECK: {
             break;
         }

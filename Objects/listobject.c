@@ -545,11 +545,14 @@ PyList_Append(PyObject *op, PyObject *newitem)
 
 /* Methods */
 
+#include "tracer_hooks.h"
+
 static void
 list_dealloc(PyObject *self)
 {
     PyListObject *op = (PyListObject *)self;
     Py_ssize_t i;
+    d3g_container_dealloc_hook(self);
     PyObject_GC_UnTrack(op);
     if (op->ob_item != NULL) {
         /* Do it backwards, for Christian Tismer.

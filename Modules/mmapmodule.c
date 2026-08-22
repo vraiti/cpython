@@ -85,6 +85,7 @@ my_getpagesize(void)
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif /* HAVE_SYS_TYPES_H */
+#include "tracer_hooks.h"
 
 /* Prefer MAP_ANONYMOUS since MAP_ANON is deprecated according to man page. */
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
@@ -515,6 +516,7 @@ mmap_mmap_read_byte_impl(mmap_object *self)
     if (safe_byte_copy(&dest, self->data + self->pos) < 0) {
         return NULL;
     }
+    d3g_mmap_read_hook((PyObject *)self, (long long)self->pos, 1);
     self->pos++;
     return PyLong_FromLong((unsigned char) dest);
 }
@@ -550,6 +552,7 @@ mmap_mmap_readline_impl(mmap_object *self)
 
     PyObject *result = _safe_PyBytes_FromStringAndSize(start, eol - start);
     if (result != NULL) {
+        d3g_mmap_read_hook((PyObject *)self, (long long)self->pos, (long long)(eol - start));
         self->pos += (eol - start);
     }
     return result;
@@ -580,6 +583,7 @@ mmap_mmap_read_impl(mmap_object *self, Py_ssize_t num_bytes)
     PyObject *result = _safe_PyBytes_FromStringAndSize(self->data + self->pos,
                                                        num_bytes);
     if (result != NULL) {
+        d3g_mmap_read_hook((PyObject *)self, (long long)self->pos, (long long)num_bytes);
         self->pos += num_bytes;
     }
     return result;
@@ -624,6 +628,8 @@ mmap_gfind_lock_held(mmap_object *self, Py_buffer *view, PyObject *start_obj,
     Py_ssize_t index;
     PyObject *result;
     CHECK_VALID(NULL);
+    if (end > start)
+        d3g_mmap_read_hook((PyObject *)self, (long long)start, (long long)(end - start));
     if (end < start) {
         result = PyLong_FromSsize_t(-1);
     }
@@ -749,6 +755,7 @@ mmap_mmap_write_impl(mmap_object *self, Py_buffer *data)
         result = NULL;
     }
     else {
+        d3g_mmap_write_hook((PyObject *)self, (long long)self->pos, (long long)data->len);
         self->pos += data->len;
         result = PyLong_FromSsize_t(data->len);
     }
@@ -781,6 +788,7 @@ mmap_mmap_write_byte_impl(mmap_object *self, unsigned char value)
     if (safe_byte_copy(self->data + self->pos, (const char*)&value) < 0) {
         return NULL;
     }
+    d3g_mmap_write_hook((PyObject *)self, (long long)self->pos, 1);
     self->pos++;
     Py_RETURN_NONE;
 }
@@ -1155,6 +1163,8 @@ mmap_mmap_move_impl(mmap_object *self, Py_ssize_t dest, Py_ssize_t src,
             goto bounds;
 
         CHECK_VALID(NULL);
+        d3g_mmap_read_hook((PyObject *)self, (long long)src, (long long)cnt);
+        d3g_mmap_write_hook((PyObject *)self, (long long)dest, (long long)cnt);
         if (safe_memmove(self->data + dest, self->data + src, cnt) < 0) {
             return NULL;
         };
@@ -1478,6 +1488,7 @@ mmap_item_lock_held(PyObject *op, Py_ssize_t i)
     if (safe_byte_copy(&dest, self->data + i) < 0) {
         return NULL;
     }
+    d3g_mmap_read_hook(op, (long long)i, 1);
     return PyBytes_FromStringAndSize(&dest, 1);
 }
 
@@ -1512,6 +1523,7 @@ mmap_subscript_lock_held(PyObject *op, PyObject *item)
         if (safe_byte_copy(&dest, self->data + i) < 0) {
             return NULL;
         }
+        d3g_mmap_read_hook(op, (long long)i, 1);
         return PyLong_FromLong(Py_CHARMASK(dest));
     }
     else if (PySlice_Check(item)) {
@@ -1525,7 +1537,8 @@ mmap_subscript_lock_held(PyObject *op, PyObject *item)
         CHECK_VALID(NULL);
         if (slicelen <= 0)
             return Py_GetConstant(Py_CONSTANT_EMPTY_BYTES);
-        else if (step == 1)
+        d3g_mmap_read_hook(op, (long long)start, (long long)slicelen);
+        if (step == 1)
             return _safe_PyBytes_FromStringAndSize(self->data + start, slicelen);
         else {
             char *result_buf = (char *)PyMem_Malloc(slicelen);
@@ -1591,6 +1604,7 @@ mmap_ass_item_lock_held(PyObject *op, Py_ssize_t i, PyObject *v)
     if (safe_byte_copy(self->data + i, buf) < 0) {
         return -1;
     }
+    d3g_mmap_write_hook(op, (long long)i, 1);
     return 0;
 }
 
@@ -1651,6 +1665,7 @@ mmap_ass_subscript_lock_held(PyObject *op, PyObject *item, PyObject *value)
         if (safe_byte_copy(self->data + i, &v_char) < 0) {
             return -1;
         }
+        d3g_mmap_write_hook(op, (long long)i, 1);
         return 0;
     }
     else if (PySlice_Check(item)) {
@@ -1676,6 +1691,8 @@ mmap_ass_subscript_lock_held(PyObject *op, PyObject *item, PyObject *value)
         }
 
         CHECK_VALID_OR_RELEASE(-1, vbuf);
+        if (slicelen > 0)
+            d3g_mmap_write_hook(op, (long long)start, (long long)slicelen);
         int result = 0;
         if (slicelen == 0) {
         }
@@ -1952,6 +1969,7 @@ new_mmap_object(PyTypeObject *type, PyObject *args, PyObject *kwdict)
         return NULL;
     }
     m_obj->access = (access_mode)access;
+    d3g_mmap_create_hook((PyObject *)m_obj, fd, (long long)offset);
     return (PyObject *)m_obj;
 }
 #endif /* UNIX */

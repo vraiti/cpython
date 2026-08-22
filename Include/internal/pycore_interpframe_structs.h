@@ -28,6 +28,7 @@ enum _frameowner {
 };
 
 struct _PyInterpreterFrame {
+    uint64_t call_id;
     _PyStackRef f_executable; /* Deferred or strong reference (code object or None) */
     struct _PyInterpreterFrame *previous;
     _PyStackRef f_funcobj; /* Deferred or strong reference. Only valid if not on C stack */

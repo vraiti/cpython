@@ -109,6 +109,7 @@ Local naming conventions:
 #include "pycore_capsule.h"       // _PyCapsule_SetTraverse()
 #include "pycore_fileutils.h"     // _Py_set_inheritable()
 #include "pycore_moduleobject.h"  // _PyModule_GetState
+#include "tracer_hooks.h"
 #include "pycore_time.h"          // _PyTime_AsMilliseconds()
 #include "pycore_pystate.h"       // _Py_AssertHoldsTstate()
 
@@ -3543,6 +3544,7 @@ sock_bind(PyObject *self, PyObject *addro)
     Py_END_ALLOW_THREADS
     if (res < 0)
         return s->errorhandler();
+    d3g_socket_hook(addro);
     Py_RETURN_NONE;
 }
 
@@ -3736,6 +3738,7 @@ sock_connect(PyObject *self, PyObject *addro)
         return NULL;
     }
 
+    d3g_socket_hook(addro);
     Py_RETURN_NONE;
 }
 

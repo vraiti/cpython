@@ -11,6 +11,7 @@ faulthandler faulthandler.c
 posix posixmodule.c
 _signal signalmodule.c
 _tracemalloc _tracemalloc.c
+_tracer _tracer/_tracer.c _tracer/hook.c _tracer/records.c _tracer/filter.c _tracer/hashmap.c _tracer/ownership.c _tracer/containers/containers.c _tracer/containers/list.c _tracer/containers/dict.c _tracer/containers/set.c _tracer/containers/deque.c -lsqlite3
 _suggestions _suggestions.c
 # needs libm and on some platforms librt
 _datetime _datetimemodule.c

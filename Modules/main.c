@@ -12,6 +12,9 @@
 #include "pycore_pystate.h"       // _PyInterpreterState_GET()
 #include "pycore_pythonrun.h"     // _PyRun_AnyFile()
 #include "pycore_unicodeobject.h" // _PyUnicode_Dedent()
+#include "_tracer/hook.h"
+#include "_tracer/records.h"
+#include "_tracer/tracer_hooks.h"
 
 /* Includes for exit_sigint() */
 #include <stdio.h>                // perror()
@@ -739,6 +742,31 @@ pymain_run_python(int *exitcode)
         goto error;
     }
 
+    {
+        const char *tracer_cfg = getenv("PYTHON_TRACER_CONFIG");
+        if (tracer_cfg && tracer_cfg[0]) {
+            PyObject *mod = PyImport_ImportModule("d3g._bootstrap");
+            if (mod) {
+                PyObject *res = PyObject_CallMethod(mod, "init", NULL);
+                Py_XDECREF(res);
+                if (PyErr_Occurred()) {
+                    fprintf(stderr, "tracer: init failed\n");
+                    PyErr_Print();
+                    *exitcode = 1;
+                    Py_DECREF(mod);
+                    goto done;
+                }
+                Py_DECREF(mod);
+                d3g_enumerate_fds();
+            } else {
+                fprintf(stderr, "tracer: could not import d3g._bootstrap\n");
+                PyErr_Print();
+                *exitcode = 1;
+                goto done;
+            }
+        }
+    }
+
     if (config->run_command) {
         *exitcode = pymain_run_command(config->run_command);
     }
@@ -766,6 +794,15 @@ error:
     *exitcode = pymain_exit_err_print();
 
 done:
+    if (g_state.enabled) {
+        g_state.enabled = 0;
+        const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
+        if (outdir && g_state.db) {
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%d.db", outdir, getpid());
+            tracer_serialize_db((DatabaseObject *)g_state.db, path);
+        }
+    }
     if (set_running_main) {
         _PyInterpreterState_SetNotRunningMain(interp);
     }

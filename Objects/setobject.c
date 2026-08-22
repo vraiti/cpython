@@ -540,12 +540,16 @@ set_next(PySetObject *so, Py_ssize_t *pos_ptr, setentry **entry_ptr)
     return 1;
 }
 
+#include "tracer_hooks.h"
+
 static void
 set_dealloc(PyObject *self)
 {
     PySetObject *so = _PySet_CAST(self);
     setentry *entry;
     Py_ssize_t used = so->used;
+
+    d3g_container_dealloc_hook(self);
 
     /* bpo-31095: UnTrack is needed before calling any callbacks */
     PyObject_GC_UnTrack(so);

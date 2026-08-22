@@ -6,6 +6,7 @@
 #include "pycore_pyatomic_ft_wrappers.h"
 #include "pycore_typeobject.h"    // _PyType_GetModuleState()
 #include "pycore_weakref.h"       // FT_CLEAR_WEAKREFS()
+#include "tracer_hooks.h"
 
 #include <stddef.h>
 
@@ -1544,6 +1545,8 @@ deque_dealloc(PyObject *self)
     dequeobject *deque = dequeobject_CAST(self);
     PyTypeObject *tp = Py_TYPE(deque);
     Py_ssize_t i;
+
+    d3g_container_dealloc_hook(self);
 
     PyObject_GC_UnTrack(deque);
     FT_CLEAR_WEAKREFS(self, deque->weakreflist);

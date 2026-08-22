@@ -6848,6 +6848,8 @@ object_init(PyObject *self, PyObject *args, PyObject *kwds)
     return 0;
 }
 
+#include "tracer_hooks.h"
+
 static PyObject *
 object_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
@@ -6915,6 +6917,7 @@ object_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     if (obj == NULL) {
         return NULL;
     }
+    d3g_object_new_hook(obj, type);
     return obj;
 }
 

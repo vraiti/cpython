@@ -10,6 +10,7 @@
 // --- Python includes ------------------------------------------------------
 
 #include "Python.h"
+#include "tracer_hooks.h"
 
 #ifdef __VXWORKS__
 #  include "pycore_bitutils.h"    // _Py_popcount32()
@@ -758,6 +759,8 @@ PyOS_AfterFork_Child(void)
     if (_PyStatus_EXCEPTION(status)) {
         goto fatal_error;
     }
+
+    d3g_after_fork_child_hook();
 
     run_at_forkers(tstate->interp->after_forkers_child, 0);
     return;
@@ -12297,6 +12300,7 @@ os_pipe_impl(PyObject *module)
     if (res != 0)
         return PyErr_SetFromErrno(PyExc_OSError);
 #endif /* !MS_WINDOWS */
+    d3g_pipe_hook(fds[0], fds[1]);
     return Py_BuildValue("(ii)", fds[0], fds[1]);
 }
 #endif  /* HAVE_PIPE */
@@ -12721,6 +12725,7 @@ os_mkfifo_impl(PyObject *module, path_t *path, int mode, int dir_fd)
     if (result != 0)
         return (!async_err) ? posix_error() : NULL;
 
+    d3g_mkfifo_hook(path->narrow);
     Py_RETURN_NONE;
 }
 #endif /* HAVE_MKFIFO */

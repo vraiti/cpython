@@ -188,6 +188,7 @@ _PyFrame_Initialize(
     PyThreadState *tstate, _PyInterpreterFrame *frame, _PyStackRef func,
     PyObject *locals, PyCodeObject *code, int null_locals_from, _PyInterpreterFrame *previous)
 {
+    frame->call_id = 0;
     frame->previous = previous;
     frame->f_funcobj = func;
     frame->f_executable = PyStackRef_FromPyObjectNew(code);
