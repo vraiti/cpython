@@ -11,6 +11,11 @@ typedef enum {
     CONTAINER_LIST,
     CONTAINER_DEQUE,
     CONTAINER_SET,
+    CONTAINER_TUPLE,     /* immutable: read tracking only */
+    CONTAINER_BYTEARRAY, /* mutable byte buffer: index read/write tracking */
+    /* TUPLE and BYTEARRAY use the generic ObjectTraceData.attrs map keyed
+     * by index; they have no type-specific ARW structure
+     * (see new_typed_container_trace_data). */
 } ContainerType;
 
 #include "dict.h"

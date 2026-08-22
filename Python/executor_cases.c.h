@@ -58,6 +58,7 @@
         }
 
         case _RESUME_CHECK: {
+            oparg = CURRENT_OPARG();
             #if defined(__EMSCRIPTEN__)
             if (_Py_emscripten_signal_clock == 0) {
                 UOP_STAT_INC(uopcode, miss);
@@ -79,6 +80,11 @@
                 JUMP_TO_JUMP_TARGET();
             }
             #endif
+            if (oparg == 0) {
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_py_call_hook(frame);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
+            }
             break;
         }
 
@@ -1320,6 +1326,9 @@
                 JUMP_TO_JUMP_TARGET();
             }
             STAT_INC(BINARY_OP, hit);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getitem_hook(list, sub, res_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             res = PyStackRef_FromPyObjectSteal(res_o);
             #else
             if (index >= PyList_GET_SIZE(list)) {
@@ -1329,6 +1338,9 @@
             STAT_INC(BINARY_OP, hit);
             PyObject *res_o = PyList_GET_ITEM(list, index);
             assert(res_o != NULL);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getitem_hook(list, sub, res_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             res = PyStackRef_FromPyObjectNew(res_o);
             #endif
             STAT_INC(BINARY_OP, hit);
@@ -1361,6 +1373,11 @@
             PyObject *res_o = _PyList_SliceSubscript(list, sub);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             STAT_INC(BINARY_OP, hit);
+            if (res_o != NULL) {
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                (void)d3g_getitem_hook(list, sub, res_o);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
+            }
             _PyFrame_SetStackPointer(frame, stack_pointer);
             _PyStackRef tmp = sub_st;
             sub_st = PyStackRef_NULL;
@@ -1409,6 +1426,9 @@
             }
             STAT_INC(BINARY_OP, hit);
             PyObject *res_o = (PyObject*)&_Py_SINGLETON(strings).ascii[c];
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getitem_hook(str, sub, res_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             PyStackRef_CLOSE_SPECIALIZED(sub_st, _PyLong_ExactDealloc);
             stack_pointer += -2;
             assert(WITHIN_STACK_BOUNDS());
@@ -1466,6 +1486,9 @@
             STAT_INC(BINARY_OP, hit);
             PyObject *res_o = PyTuple_GET_ITEM(tuple, index);
             assert(res_o != NULL);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getitem_hook(tuple, sub, res_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             PyStackRef_CLOSE_SPECIALIZED(sub_st, _PyLong_ExactDealloc);
             res = PyStackRef_FromPyObjectNew(res_o);
             stack_pointer += -1;
@@ -1518,6 +1541,11 @@
             if (rc == 0) {
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 _PyErr_SetKeyError(sub);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
+            }
+            else if (rc > 0) {
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                (void)d3g_getitem_hook(dict, sub, res_o);
                 stack_pointer = _PyFrame_GetStackPointer(frame);
             }
             _PyFrame_SetStackPointer(frame, stack_pointer);
@@ -1692,6 +1720,9 @@
             }
             STAT_INC(STORE_SUBSCR, hit);
             PyObject *old_value = PyList_GET_ITEM(list, index);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_setitem_hook(list, sub, PyStackRef_AsPyObjectBorrow(value), 0);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             FT_ATOMIC_STORE_PTR_RELEASE(_PyList_ITEMS(list)[index],
                                         PyStackRef_AsPyObjectSteal(value));
             assert(old_value != NULL);
@@ -1717,6 +1748,8 @@
             assert(PyDict_CheckExact(dict));
             STAT_INC(STORE_SUBSCR, hit);
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_setitem_hook(dict, PyStackRef_AsPyObjectBorrow(sub),
+                             PyStackRef_AsPyObjectBorrow(value), 0);
             int err = _PyDict_SetItem_Take2((PyDictObject *)dict,
                 PyStackRef_AsPyObjectSteal(sub),
                 PyStackRef_AsPyObjectSteal(value));
@@ -1821,6 +1854,11 @@
             _PyFrame_SetStackPointer(frame, stack_pointer);
             d3g_py_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
+            if (frame->owner == FRAME_OWNED_BY_GENERATOR) {
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_gen_iter_hook(frame->previous, 1);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
+            }
             assert(frame->owner != FRAME_OWNED_BY_INTERPRETER);
             _PyStackRef temp = PyStackRef_MakeHeapSafe(retval);
             stack_pointer += -1;
@@ -1987,6 +2025,7 @@
             _PyInterpreterFrame *gen_frame = frame;
             frame = tstate->current_frame = frame->previous;
             gen_frame->previous = NULL;
+            d3g_gen_iter_hook(frame, 0);
             assert(INLINE_CACHE_ENTRIES_SEND == INLINE_CACHE_ENTRIES_FOR_ITER);
             #if TIER_ONE && defined(Py_DEBUG)
             if (!PyStackRef_IsNone(frame->f_executable)) {
@@ -2463,6 +2502,7 @@
 
         case _LOAD_GLOBAL_BUILTINS: {
             _PyStackRef res;
+            oparg = CURRENT_OPARG();
             uint16_t version = (uint16_t)CURRENT_OPERAND0();
             uint16_t index = (uint16_t)CURRENT_OPERAND1();
             PyDictObject *dict = (PyDictObject *)BUILTINS();
@@ -2495,6 +2535,9 @@
             stack_pointer[0] = res;
             stack_pointer += 1;
             assert(WITHIN_STACK_BOUNDS());
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_global_load_hook(GLOBALS(), GETITEM(FRAME_CO_NAMES, oparg>>1), res_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             break;
         }
 
@@ -3308,6 +3351,7 @@
         case _LOAD_ATTR_INSTANCE_VALUE: {
             _PyStackRef owner;
             _PyStackRef attr;
+            oparg = CURRENT_OPARG();
             owner = stack_pointer[-1];
             uint16_t offset = (uint16_t)CURRENT_OPERAND0();
             PyObject *owner_o = PyStackRef_AsPyObjectBorrow(owner);
@@ -3317,6 +3361,9 @@
                 UOP_STAT_INC(uopcode, miss);
                 JUMP_TO_JUMP_TARGET();
             }
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(owner_o, GETITEM(FRAME_CO_NAMES, oparg >> 1), attr_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             #ifdef Py_GIL_DISABLED
             int increfed = _Py_TryIncrefCompareStackRef(value_ptr, attr_o, &attr);
             if (!increfed) {
@@ -3339,6 +3386,7 @@
         case _LOAD_ATTR_MODULE: {
             _PyStackRef owner;
             _PyStackRef attr;
+            oparg = CURRENT_OPARG();
             owner = stack_pointer[-1];
             uint32_t dict_version = (uint32_t)CURRENT_OPERAND0();
             uint16_t index = (uint16_t)CURRENT_OPERAND1();
@@ -3362,6 +3410,9 @@
                 UOP_STAT_INC(uopcode, miss);
                 JUMP_TO_JUMP_TARGET();
             }
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(owner_o, GETITEM(FRAME_CO_NAMES, oparg >> 1), attr_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             #ifdef Py_GIL_DISABLED
             int increfed = _Py_TryIncrefCompareStackRef(&ep->me_value, attr_o, &attr);
             if (!increfed) {
@@ -3431,6 +3482,9 @@
                 }
             }
             STAT_INC(LOAD_ATTR, hit);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(owner_o, name, attr_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             #ifdef Py_GIL_DISABLED
             int increfed = _Py_TryIncrefCompareStackRef(&ep->me_value, attr_o, &attr);
             if (!increfed) {
@@ -3452,6 +3506,7 @@
         case _LOAD_ATTR_SLOT: {
             _PyStackRef owner;
             _PyStackRef attr;
+            oparg = CURRENT_OPARG();
             owner = stack_pointer[-1];
             uint16_t index = (uint16_t)CURRENT_OPERAND0();
             PyObject *owner_o = PyStackRef_AsPyObjectBorrow(owner);
@@ -3461,6 +3516,9 @@
                 UOP_STAT_INC(uopcode, miss);
                 JUMP_TO_JUMP_TARGET();
             }
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(owner_o, GETITEM(FRAME_CO_NAMES, oparg >> 1), attr_o);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             #ifdef Py_GIL_DISABLED
             int increfed = _Py_TryIncrefCompareStackRef(addr, attr_o, &attr);
             if (!increfed) {
@@ -3569,6 +3627,7 @@
         case _STORE_ATTR_INSTANCE_VALUE: {
             _PyStackRef owner;
             _PyStackRef value;
+            oparg = CURRENT_OPARG();
             owner = stack_pointer[-1];
             value = stack_pointer[-2];
             uint16_t offset = (uint16_t)CURRENT_OPERAND0();
@@ -3577,6 +3636,10 @@
             assert(_PyObject_GetManagedDict(owner_o) == NULL);
             PyObject **value_ptr = (PyObject**)(((char *)owner_o) + offset);
             PyObject *old_value = *value_ptr;
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_setattr_hook(owner_o, GETITEM(FRAME_CO_NAMES, oparg),
+                             PyStackRef_AsPyObjectBorrow(value), 0);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             FT_ATOMIC_STORE_PTR_RELEASE(*value_ptr, PyStackRef_AsPyObjectSteal(value));
             if (old_value == NULL) {
                 PyDictValues *values = _PyObject_InlineValues(owner_o);
@@ -3647,6 +3710,7 @@
                 }
             }
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_setattr_hook(owner_o, name, PyStackRef_AsPyObjectBorrow(value), 0);
             _PyDict_NotifyEvent(tstate->interp, PyDict_EVENT_MODIFIED, dict, name, PyStackRef_AsPyObjectBorrow(value));
             stack_pointer = _PyFrame_GetStackPointer(frame);
             FT_ATOMIC_STORE_PTR_RELEASE(ep->me_value, PyStackRef_AsPyObjectSteal(value));
@@ -3664,6 +3728,7 @@
         case _STORE_ATTR_SLOT: {
             _PyStackRef owner;
             _PyStackRef value;
+            oparg = CURRENT_OPARG();
             owner = stack_pointer[-1];
             value = stack_pointer[-2];
             uint16_t index = (uint16_t)CURRENT_OPERAND0();
@@ -3675,6 +3740,10 @@
             char *addr = (char *)owner_o + index;
             STAT_INC(STORE_ATTR, hit);
             PyObject *old_value = *(PyObject **)addr;
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_setattr_hook(owner_o, GETITEM(FRAME_CO_NAMES, oparg),
+                             PyStackRef_AsPyObjectBorrow(value), 0);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             FT_ATOMIC_STORE_PTR_RELEASE(*(PyObject **)addr, PyStackRef_AsPyObjectSteal(value));
             UNLOCK_OBJECT(owner_o);
             stack_pointer += -2;
@@ -4721,6 +4790,10 @@
             STAT_INC(LOAD_ATTR, hit);
             assert(descr != NULL);
             assert(_PyType_HasFeature(Py_TYPE(descr), Py_TPFLAGS_METHOD_DESCRIPTOR));
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(PyStackRef_AsPyObjectBorrow(owner),
+                                   GETITEM(FRAME_CO_NAMES, oparg >> 1), descr);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             attr = PyStackRef_FromPyObjectNew(descr);
             self = owner;
             stack_pointer[-1] = attr;
@@ -4742,6 +4815,10 @@
             STAT_INC(LOAD_ATTR, hit);
             assert(descr != NULL);
             assert(_PyType_HasFeature(Py_TYPE(descr), Py_TPFLAGS_METHOD_DESCRIPTOR));
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(PyStackRef_AsPyObjectBorrow(owner),
+                                   GETITEM(FRAME_CO_NAMES, oparg >> 1), descr);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             attr = PyStackRef_FromPyObjectNew(descr);
             self = owner;
             stack_pointer[-1] = attr;
@@ -4760,6 +4837,10 @@
             assert((oparg & 1) == 0);
             STAT_INC(LOAD_ATTR, hit);
             assert(descr != NULL);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(PyStackRef_AsPyObjectBorrow(owner),
+                                   GETITEM(FRAME_CO_NAMES, oparg >> 1), descr);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             stack_pointer += -1;
             assert(WITHIN_STACK_BOUNDS());
             _PyFrame_SetStackPointer(frame, stack_pointer);
@@ -4782,6 +4863,10 @@
             assert(Py_TYPE(PyStackRef_AsPyObjectBorrow(owner))->tp_dictoffset == 0);
             STAT_INC(LOAD_ATTR, hit);
             assert(descr != NULL);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(PyStackRef_AsPyObjectBorrow(owner),
+                                   GETITEM(FRAME_CO_NAMES, oparg >> 1), descr);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             stack_pointer += -1;
             assert(WITHIN_STACK_BOUNDS());
             _PyFrame_SetStackPointer(frame, stack_pointer);
@@ -4818,6 +4903,10 @@
             STAT_INC(LOAD_ATTR, hit);
             assert(descr != NULL);
             assert(_PyType_HasFeature(Py_TYPE(descr), Py_TPFLAGS_METHOD_DESCRIPTOR));
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            (void)d3g_getattr_hook(PyStackRef_AsPyObjectBorrow(owner),
+                                   GETITEM(FRAME_CO_NAMES, oparg >> 1), descr);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             attr = PyStackRef_FromPyObjectNew(descr);
             self = owner;
             stack_pointer[-1] = attr;
@@ -5342,6 +5431,10 @@
             callable = stack_pointer[-3];
             PyObject *arg_o = PyStackRef_AsPyObjectBorrow(arg);
             assert(oparg == 1);
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(PyStackRef_AsPyObjectBorrow(callable), NULL);
+            d3g_c_return_hook(frame);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             (void)callable;
             (void)null;
             STAT_INC(CALL, hit);
@@ -5379,7 +5472,9 @@
             assert(oparg == 1);
             STAT_INC(CALL, hit);
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(PyStackRef_AsPyObjectBorrow(callable), NULL);
             PyObject *res_o = PyObject_Str(arg_o);
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             (void)callable;
             (void)null;
@@ -5422,7 +5517,9 @@
             assert(oparg == 1);
             STAT_INC(CALL, hit);
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(PyStackRef_AsPyObjectBorrow(callable), NULL);
             PyObject *res_o = PySequence_Tuple(arg_o);
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             (void)callable;
             (void)null;
@@ -5592,7 +5689,9 @@
                 JUMP_TO_ERROR();
             }
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(callable_o, NULL);
             PyObject *res_o = tp->tp_vectorcall((PyObject *)tp, args_o, total_args, NULL);
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             STACKREFS_TO_PYOBJECTS_CLEANUP(args_o);
             _PyFrame_SetStackPointer(frame, stack_pointer);
@@ -5878,7 +5977,9 @@
             STAT_INC(CALL, hit);
             PyObject *arg_o = PyStackRef_AsPyObjectBorrow(arg);
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(PyStackRef_AsPyObjectBorrow(callable), NULL);
             Py_ssize_t len_i = PyObject_Length(arg_o);
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             if (len_i < 0) {
                 JUMP_TO_ERROR();
@@ -5934,7 +6035,9 @@
             _PyStackRef cls_stackref = arguments[1];
             _PyStackRef inst_stackref = arguments[0];
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(callable_o, NULL);
             int retval = PyObject_IsInstance(PyStackRef_AsPyObjectBorrow(inst_stackref), PyStackRef_AsPyObjectBorrow(cls_stackref));
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             if (retval < 0) {
                 JUMP_TO_ERROR();
@@ -6568,10 +6671,12 @@
             PyObject *kwnames_o = PyStackRef_AsPyObjectBorrow(kwnames);
             int positional_args = total_args - (int)PyTuple_GET_SIZE(kwnames_o);
             _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_c_call_hook(callable_o, NULL);
             PyObject *res_o = PyObject_Vectorcall(
                 callable_o, args_o,
                 positional_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 kwnames_o);
+            d3g_c_return_hook(frame);
             stack_pointer = _PyFrame_GetStackPointer(frame);
             stack_pointer += -1;
             assert(WITHIN_STACK_BOUNDS());

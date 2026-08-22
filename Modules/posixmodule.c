@@ -6792,6 +6792,9 @@ static PyObject *
 os__exit_impl(PyObject *module, int status)
 /*[clinic end generated code: output=116e52d9c2260d54 input=5e6d57556b0c4a62]*/
 {
+    /* _exit() skips every cleanup path, so a forked child that ends here
+     * would otherwise lose its trace. */
+    d3g_flush_trace();
     _exit(status);
     return NULL; /* Make gcc -Wall happy */
 }

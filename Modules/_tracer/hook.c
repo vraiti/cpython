@@ -6,6 +6,8 @@
 #include "pycore_interpframe_structs.h"
 #include "pycore_genobject.h"
 #include "pycore_stackref.h"
+#include "pycore_code.h"          /* _Py_GetBaseCodeUnit */
+#include "opcode_ids.h"           /* FOR_ITER */
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -255,6 +257,79 @@ static ObjectTraceData *new_trace_data(PyObject *obj) {
     return trace_data;
 }
 
+/* collections.deque, resolved lazily on first use. Not exposed via any
+ * public type-check macro, so this is the only way to identify it (and
+ * its subclasses) by actual type identity rather than by name. */
+static PyTypeObject *get_deque_type(void) {
+    static PyTypeObject *cached = NULL;
+    static int resolved = 0;
+    if (!resolved) {
+        resolved = 1;
+        PyObject *collections_mod = PyImport_ImportModule("collections");
+        if (collections_mod) {
+            PyObject *deque_type = PyObject_GetAttrString(collections_mod, "deque");
+            Py_DECREF(collections_mod);
+            if (deque_type && PyType_Check(deque_type)) {
+                cached = (PyTypeObject *)deque_type;
+            } else {
+                Py_XDECREF(deque_type);
+            }
+        } else {
+            PyErr_Clear();
+        }
+    }
+    return cached;
+}
+
+/* classify a container instance for tracking (dict/list/set get
+ * append/add/etc. dataflow via classify_container_call; tuple is
+ * read-only tracking since it can never receive a setitem). */
+static ContainerType classify_container_type(PyObject *obj) {
+    if (PyDict_Check(obj)) return CONTAINER_DICT;
+    if (PyList_Check(obj)) return CONTAINER_LIST;
+    if (PyAnySet_Check(obj)) return CONTAINER_SET;
+    PyTypeObject *deque_type = get_deque_type();
+    if (deque_type && PyObject_TypeCheck(obj, deque_type))
+        return CONTAINER_DEQUE;
+    if (PyTuple_Check(obj)) return CONTAINER_TUPLE;
+    if (PyByteArray_Check(obj)) return CONTAINER_BYTEARRAY;
+    return CONTAINER_NONE;
+}
+
+static ObjectTraceData *new_typed_container_trace_data(PyObject *obj, ContainerType type) {
+    size_t size;
+    switch (type) {
+    case CONTAINER_DICT:  size = sizeof(DictTraceData); break;
+    case CONTAINER_LIST:  size = sizeof(ListTraceData); break;
+    case CONTAINER_SET:   size = sizeof(SetTraceData); break;
+    case CONTAINER_DEQUE: size = sizeof(DequeTraceData); break;
+    default:              size = sizeof(ObjectTraceData); break;
+    }
+    ObjectTraceData *trace_data = malloc(size);
+    trace_data->id = next_trace_data_id++;
+    ARWMap_init(&trace_data->attrs, 16);
+    trace_data->type = type;
+    switch (type) {
+    case CONTAINER_DICT:  arwdict_init(&((DictTraceData *)trace_data)->arws); break;
+    case CONTAINER_LIST:  arwlist_init(&((ListTraceData *)trace_data)->arws); break;
+    case CONTAINER_SET:   arwset_init(&((SetTraceData *)trace_data)->arws); break;
+    case CONTAINER_DEQUE: arwdeque_init(&((DequeTraceData *)trace_data)->arws); break;
+    default: break;
+    }
+    umap_set(&g_state.object_extras, (uintptr_t)obj, (intptr_t)trace_data);
+    return trace_data;
+}
+
+/* Attach container-specific tracking to a plain dict/list/set/deque the
+ * first time it becomes reachable from a tracked object (as an attribute
+ * value); relies on d3g_container_dealloc_hook for finalization, same as
+ * attach_container_trace_data. */
+static ObjectTraceData *attach_typed_container_trace_data(PyObject *obj, ContainerType type) {
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+    db_add_object(db, 0);
+    return new_typed_container_trace_data(obj, type);
+}
+
 /* For arbitrary heap-type instances (tracked via object_new): these always
  * support weakrefs, so a weakref finalizer is how we learn they were freed. */
 static void attach_trace_data(PyObject *obj) {
@@ -313,6 +388,12 @@ void d3g_setattr_hook(PyObject *obj, PyObject *name, PyObject *value, int result
     if (!value || Py_IS_PRIMITIVE(value)) return;
 
     ObjectTraceData *val_td = get_trace_data(value);
+    if (!val_td) {
+        ContainerType ctype = classify_container_type(value);
+        if (ctype != CONTAINER_NONE) {
+            val_td = attach_typed_container_trace_data(value, ctype);
+        }
+    }
     if (val_td) {
         DatabaseObject *db = (DatabaseObject *)g_state.db;
         if ((Py_ssize_t)td->id < db->objects_len) {
@@ -464,13 +545,101 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
 
 /* ---- item hooks (subscript operations) ---- */
 
+/* Item keys are arbitrary objects, not just strings, so the ARWMap key
+ * used for attribute tracking (a C string) has to be derived: strings are
+ * used directly, everything else falls back to repr(). *repr_out is set
+ * to a new reference the caller must Py_XDECREF once done with the
+ * returned pointer, or left NULL if no repr was needed/possible. */
+static const char *item_key_str(PyObject *key, PyObject **repr_out) {
+    *repr_out = NULL;
+    if (PyUnicode_Check(key)) {
+        return PyUnicode_AsUTF8(key);
+    }
+    PyObject *repr = PyObject_Repr(key);
+    if (!repr) {
+        PyErr_Clear();
+        return NULL;
+    }
+    const char *s = PyUnicode_AsUTF8(repr);
+    if (!s) {
+        Py_DECREF(repr);
+        PyErr_Clear();
+        return NULL;
+    }
+    *repr_out = repr;
+    return s;
+}
+
 PyObject *d3g_getitem_hook(PyObject *o, PyObject *key, PyObject *result) {
     if (!g_state.enabled) return result;
+
+    ObjectTraceData *td = get_trace_data(o);
+    if (!td) return result;
+
+    PyObject *repr = NULL;
+    const char *key_str = item_key_str(key, &repr);
+    if (!key_str) return result;
+
+    ARW arw;
+    int found = ARWMap_get(&td->attrs, key_str, &arw);
+    Py_XDECREF(repr);
+    if (!found) return result;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) return result;
+
+    CallRecordData *rec = current_record();
+    if (rec) {
+        uint64_t caller_id = get_frame_call_id(frame);
+        int read_lineno = PyFrame_GetLineNumber(frame);
+        db_add_attr_read(rec, caller_id, arw.call_lineno, read_lineno);
+    }
+
     return result;
 }
 
 void d3g_setitem_hook(PyObject *o, PyObject *key, PyObject *value, int result) {
     if (!g_state.enabled) return;
+    if (result != 0) return;
+
+    ObjectTraceData *td = get_trace_data(o);
+    if (!td) return;
+
+    PyObject *repr = NULL;
+    const char *key_str = item_key_str(key, &repr);
+    if (!key_str) return;
+
+    PyFrameObject *frame = PyEval_GetFrame();
+    if (!frame) {
+        Py_XDECREF(repr);
+        return;
+    }
+
+    uint64_t caller_id = get_frame_call_id(frame);
+    int call_lineno = PyFrame_GetLineNumber(frame);
+    ARW arw = {caller_id, call_lineno};
+    ARWMap_set(&td->attrs, key_str, arw);
+
+    if (!value || Py_IS_PRIMITIVE(value)) {
+        Py_XDECREF(repr);
+        return;
+    }
+
+    ObjectTraceData *val_td = get_trace_data(value);
+    if (!val_td) {
+        ContainerType ctype = classify_container_type(value);
+        if (ctype != CONTAINER_NONE) {
+            val_td = attach_typed_container_trace_data(value, ctype);
+        }
+    }
+    if (val_td) {
+        DatabaseObject *db = (DatabaseObject *)g_state.db;
+        if ((Py_ssize_t)td->id < db->objects_len) {
+            ObjectRecordData *orec = &db->objects[td->id];
+            SMap_set(&orec->members, key_str, (void *)(intptr_t)val_td->id);
+        }
+    }
+    Py_XDECREF(repr);
 }
 
 /* ---- deref hooks (closure variable access) ---- */
@@ -1200,6 +1369,55 @@ void d3g_after_fork_child_hook(void) {
     if (!g_state.enabled) return;
     if (!g_state.db) return;
     db_clear_records((DatabaseObject *)g_state.db);
+}
+
+/* ---- generator-driven for loops (FOR_ITER_GEN) ---- */
+
+/* FOR_ITER_GEN inlines the generator's frame instead of calling
+ * tp_iternext, so the branch decision is only known later: a YIELD_VALUE
+ * back into the loop means another iteration (exhausted=0), a RETURN_VALUE
+ * from the generator frame means the loop exits (exhausted=1). Both sites
+ * pass the *caller* frame. The decision is recorded only when that frame is
+ * a real Python frame currently suspended at a FOR_ITER-family instruction;
+ * this excludes the generic FOR_ITER path (where the generator runs under
+ * an interpreter entry frame and _FOR_ITER records the bit itself) and
+ * SEND-driven suspension (yield from / await), which is not a loop. Bit
+ * polarity matches _FOR_ITER: 1 = exhausted, 0 = body executes. */
+void d3g_gen_iter_hook(_PyInterpreterFrame *caller, int exhausted) {
+    if (!g_state.enabled) return;
+    if (!caller || caller->owner == FRAME_OWNED_BY_INTERPRETER) return;
+    if (PyStackRef_IsNone(caller->f_executable)) return;
+    PyCodeObject *code = _PyFrame_GetCode(caller);
+    int i = (int)(caller->instr_ptr - _PyFrame_GetBytecode(caller));
+    if (_Py_GetBaseCodeUnit(code, i).op.code != FOR_ITER) return;
+    d3g_branch_hook(caller, exhausted);
+}
+
+/* ---- at-exit serialization ---- */
+
+/* Write this process's trace to $PYTHON_TRACER_OUTDIR/{pid}.db and
+ * disable tracing. Idempotent. Called from the interpreter's normal exit
+ * path (Modules/main.c) and from os._exit(), which otherwise skips all
+ * cleanup and would lose a forked child's trace.
+ *
+ * A process that recorded no calls never ran traced code: this is the
+ * case for incidental subprocesses that merely inherit PYTHON_TRACER_CONFIG
+ * (e.g. multiprocessing's resource tracker). Such processes write nothing,
+ * so they don't litter the output directory with empty databases. Any
+ * ipc/io rows they might hold carry call_id 0 and are unusable anyway. */
+void d3g_flush_trace(void) {
+    if (!g_state.enabled) return;
+    g_state.enabled = 0;
+
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+    if (!db || db->calls_len == 0) return;
+
+    const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
+    if (!outdir) return;
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%d.db", outdir, getpid());
+    tracer_serialize_db(db, path);
 }
 
 /* ---- Python-visible functions ---- */

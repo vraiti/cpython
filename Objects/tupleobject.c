@@ -205,6 +205,8 @@ PyTuple_Pack(Py_ssize_t n, ...)
 
 /* Methods */
 
+#include "tracer_hooks.h"
+
 static void
 tuple_dealloc(PyObject *self)
 {
@@ -223,6 +225,8 @@ tuple_dealloc(PyObject *self)
         assert(!PyTuple_CheckExact(op));
 #endif
     }
+
+    d3g_container_dealloc_hook(self);
 
     PyObject_GC_UnTrack(op);
 

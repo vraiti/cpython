@@ -38,5 +38,7 @@ TRACER_API void d3g_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n
 TRACER_API void d3g_sem_acquire_hook(const char *name);
 TRACER_API void d3g_sem_release_hook(const char *name);
 TRACER_API void d3g_enumerate_fds(void);
+TRACER_API void d3g_flush_trace(void);
+TRACER_API void d3g_gen_iter_hook(struct _PyInterpreterFrame *caller, int exhausted);
 
 #endif

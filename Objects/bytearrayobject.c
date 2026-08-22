@@ -1254,10 +1254,13 @@ bytearray_richcompare(PyObject *self, PyObject *other, int op)
 
 }
 
+#include "tracer_hooks.h"
+
 static void
 bytearray_dealloc(PyObject *op)
 {
     PyByteArrayObject *self = _PyByteArray_CAST(op);
+    d3g_container_dealloc_hook(op);
     if (self->ob_exports > 0) {
         PyErr_SetString(PyExc_SystemError,
                         "deallocated bytearray object has exported buffers");

@@ -794,15 +794,7 @@ error:
     *exitcode = pymain_exit_err_print();
 
 done:
-    if (g_state.enabled) {
-        g_state.enabled = 0;
-        const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
-        if (outdir && g_state.db) {
-            char path[4096];
-            snprintf(path, sizeof(path), "%s/%d.db", outdir, getpid());
-            tracer_serialize_db((DatabaseObject *)g_state.db, path);
-        }
-    }
+    d3g_flush_trace();
     if (set_running_main) {
         _PyInterpreterState_SetNotRunningMain(interp);
     }

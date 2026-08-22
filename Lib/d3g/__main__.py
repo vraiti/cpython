@@ -119,8 +119,18 @@ def main() -> None:
         from d3g._bootstrap import db
         db.serialize(os.path.join(output_dir, f"{os.getpid()}.db"))
 
-        all_dbs = sorted(glob.glob(os.path.join(output_dir, "*.db")))
-        if len(all_dbs) > 1:
+        # Always leave exactly one artifact, trace.db: merge when several
+        # processes wrote traces, rename when only this one did. A stale
+        # trace.db from an earlier run is excluded from the inputs and
+        # overwritten by the result.
+        merged_path = os.path.join(output_dir, "trace.db")
+        all_dbs = sorted(
+            p for p in glob.glob(os.path.join(output_dir, "*.db"))
+            if os.path.basename(p) != "trace.db"
+        )
+        if len(all_dbs) == 1:
+            os.replace(all_dbs[0], merged_path)
+        elif all_dbs:
             _merge_dbs(output_dir, all_dbs)
 
 
