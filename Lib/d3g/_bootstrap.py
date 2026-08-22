@@ -17,6 +17,9 @@ def init() -> None:
     modules = cfg.get("modules") or []
     tracked_classes = cfg.get("classes") or []
     taint_patterns = cfg.get("taint-functions") or None
+    # traceall: trace every call and every class regardless of `modules`
+    # and `classes`; `taint-functions` still excludes their subtrees.
+    traceall = bool(cfg.get("traceall", False))
 
     prefixes = []
     if modules:
@@ -34,7 +37,8 @@ def init() -> None:
 
     path_filter = PathFilter(prefixes=prefixes, tracked_classes=tracked_classes)
     db = Database()  # noqa: F841 — stored as module global
-    install(prefixes, db, path_filter, taint_patterns=taint_patterns)
+    install(prefixes, db, path_filter, taint_patterns=taint_patterns,
+            traceall=traceall)
 
     _original_run = threading.Thread.run
     def _patched_run(self: threading.Thread) -> None:

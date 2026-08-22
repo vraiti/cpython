@@ -1803,6 +1803,8 @@ int
 _PyErr_CheckSignalsTstate(PyThreadState *tstate)
 {
     _Py_CHECK_EMSCRIPTEN_SIGNALS();
+    /* SIG_DFL signals intercepted by the tracer (flushes and re-raises). */
+    d3g_check_pending_signals();
     if (!_Py_atomic_load_int(&is_tripped)) {
         return 0;
     }

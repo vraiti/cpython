@@ -1,6 +1,7 @@
 #include "hook.h"
 #include "tracer_hooks.h"
 #include "containers/containers.h"
+#include "writer.h"
 #include "pycore_frame.h"
 #include "pycore_interpframe.h"
 #include "pycore_interpframe_structs.h"
@@ -68,7 +69,14 @@ static void free_trace_data(ObjectTraceData *data) {
         break;
     }
     ARWMap_free(&data->attrs);
+    SMap_free(&data->members);
     free(data);
+}
+
+/* Hand the object's record (objects/members rows) to the writer. The
+ * members map is moved out, leaving an empty map behind. */
+static void emit_object_record(ObjectTraceData *td) {
+    writer_push_object(td->id, td->call_id, &td->members);
 }
 
 /* Tracked objects are finalized from their type's tp_dealloc
@@ -131,6 +139,7 @@ static void frame_stack_pop(PyFrameObject *frame) {
 /* ---- scope check ---- */
 
 static int check_scope(uintptr_t filename_ptr, const char *filename) {
+    if (g_state.traceall) return 1;
     intptr_t cached;
     if (umap_get(&g_state.scope_cache, filename_ptr, &cached))
         return (int)cached;
@@ -153,6 +162,7 @@ static int32_t get_or_assign_function_id(const char *ref_str) {
         return (int32_t)(intptr_t)val;
     int32_t id = g_state.next_func_id++;
     SMap_set(&g_state.func_to_id, ref_str, (void *)(intptr_t)id);
+    writer_push_function(id, ref_str);
     return id;
 }
 
@@ -178,6 +188,7 @@ static int32_t get_obj_id(PyObject *self_obj) {
 /* ---- is_tracked_type: check type without needing a code object ---- */
 
 static int is_tracked_type(PyTypeObject *type) {
+    if (g_state.traceall) return 1;
     PathFilterObject *pf = (PathFilterObject *)g_state.filter;
     if (!pf) return 0;
 
@@ -224,11 +235,17 @@ static int is_tracked_type(PyTypeObject *type) {
 
 static uint64_t next_trace_data_id = 0;
 
-static ObjectTraceData *new_trace_data(PyObject *obj) {
-    ObjectTraceData *trace_data = malloc(sizeof(ObjectTraceData));
+static void init_trace_data(ObjectTraceData *trace_data, ContainerType type) {
     trace_data->id = next_trace_data_id++;
     ARWMap_init(&trace_data->attrs, 16);
-    trace_data->type = CONTAINER_NONE;
+    trace_data->type = type;
+    trace_data->call_id = 0;
+    SMap_init(&trace_data->members, 8);
+}
+
+static ObjectTraceData *new_trace_data(PyObject *obj) {
+    ObjectTraceData *trace_data = malloc(sizeof(ObjectTraceData));
+    init_trace_data(trace_data, CONTAINER_NONE);
     umap_set(&g_state.object_extras, (uintptr_t)obj, (intptr_t)trace_data);
     return trace_data;
 }
@@ -282,9 +299,7 @@ static ObjectTraceData *new_typed_container_trace_data(PyObject *obj, ContainerT
     default:              size = sizeof(ObjectTraceData); break;
     }
     ObjectTraceData *trace_data = malloc(size);
-    trace_data->id = next_trace_data_id++;
-    ARWMap_init(&trace_data->attrs, 16);
-    trace_data->type = type;
+    init_trace_data(trace_data, type);
     switch (type) {
     case CONTAINER_DICT:  arwdict_init(&((DictTraceData *)trace_data)->arws); break;
     case CONTAINER_LIST:  arwlist_init(&((ListTraceData *)trace_data)->arws); break;
@@ -301,8 +316,6 @@ static ObjectTraceData *new_typed_container_trace_data(PyObject *obj, ContainerT
  * value); relies on d3g_container_dealloc_hook for finalization, same as
  * attach_container_trace_data. */
 static ObjectTraceData *attach_typed_container_trace_data(PyObject *obj, ContainerType type) {
-    DatabaseObject *db = (DatabaseObject *)g_state.db;
-    db_add_object(db, 0);
     return new_typed_container_trace_data(obj, type);
 }
 
@@ -326,8 +339,6 @@ void d3g_object_new_hook(PyObject *obj, PyTypeObject *type) {
     if (get_trace_data(obj)) return;
     if (!is_tracked_type(type)) return;
 
-    DatabaseObject *db = (DatabaseObject *)g_state.db;
-    db_add_object(db, 0);
     attach_trace_data(obj);
 }
 
@@ -360,11 +371,7 @@ void d3g_setattr_hook(PyObject *obj, PyObject *name, PyObject *value, int result
         }
     }
     if (val_td) {
-        DatabaseObject *db = (DatabaseObject *)g_state.db;
-        if ((Py_ssize_t)td->id < db->objects_len) {
-            ObjectRecordData *orec = &db->objects[td->id];
-            SMap_set(&orec->members, name_str, (void *)(intptr_t)val_td->id);
-        }
+        SMap_set(&td->members, name_str, (void *)(intptr_t)val_td->id);
     }
 }
 
@@ -405,8 +412,6 @@ static ObjectTraceData *get_or_create_globals_trace(PyObject *globals) {
     ObjectTraceData *td = get_trace_data(globals);
     if (td) return td;
 
-    DatabaseObject *db = (DatabaseObject *)g_state.db;
-    db_add_object(db, 0);
     attach_container_trace_data(globals);
     return get_trace_data(globals);
 }
@@ -419,7 +424,12 @@ void d3g_container_dealloc_hook(PyObject *obj) {
     intptr_t val;
     if (umap_get(&g_state.object_extras, (uintptr_t)obj, &val)) {
         umap_delete(&g_state.object_extras, (uintptr_t)obj);
-        free_trace_data((ObjectTraceData *)val);
+        ObjectTraceData *td = (ObjectTraceData *)val;
+        /* The record is final once the object is gone. After flush the
+         * writer discards the payload, so objects already emitted at
+         * flush are not written twice. */
+        emit_object_record(td);
+        free_trace_data(td);
     }
 }
 
@@ -444,11 +454,7 @@ void d3g_global_store_hook(PyObject *globals, PyObject *name, PyObject *value) {
 
     ObjectTraceData *val_td = get_trace_data(value);
     if (val_td) {
-        DatabaseObject *db = (DatabaseObject *)g_state.db;
-        if ((Py_ssize_t)td->id < db->objects_len) {
-            ObjectRecordData *orec = &db->objects[td->id];
-            SMap_set(&orec->members, name_str, (void *)(intptr_t)val_td->id);
-        }
+        SMap_set(&td->members, name_str, (void *)(intptr_t)val_td->id);
     }
 }
 
@@ -600,11 +606,7 @@ void d3g_setitem_hook(PyObject *o, PyObject *key, PyObject *value, int result) {
         }
     }
     if (val_td) {
-        DatabaseObject *db = (DatabaseObject *)g_state.db;
-        if ((Py_ssize_t)td->id < db->objects_len) {
-            ObjectRecordData *orec = &db->objects[td->id];
-            SMap_set(&orec->members, key_str, (void *)(intptr_t)val_td->id);
-        }
+        SMap_set(&td->members, key_str, (void *)(intptr_t)val_td->id);
     }
     Py_XDECREF(repr);
 }
@@ -614,16 +616,7 @@ void d3g_setitem_hook(PyObject *o, PyObject *key, PyObject *value, int result) {
 static ObjectTraceData *get_or_create_cell_trace(PyObject *cell) {
     ObjectTraceData *td = get_trace_data(cell);
     if (td) return td;
-
-    DatabaseObject *db = (DatabaseObject *)g_state.db;
-    db_add_object(db, 0);
-
-    ObjectTraceData *trace_data = malloc(sizeof(ObjectTraceData));
-    trace_data->id = next_trace_data_id++;
-    ARWMap_init(&trace_data->attrs, 1);
-    trace_data->type = CONTAINER_NONE;
-    umap_set(&g_state.object_extras, (uintptr_t)cell, (intptr_t)trace_data);
-    return trace_data;
+    return new_trace_data(cell);
 }
 
 void d3g_deref_store_hook(PyObject *cell, PyObject *name, PyObject *value) {
@@ -647,11 +640,7 @@ void d3g_deref_store_hook(PyObject *cell, PyObject *name, PyObject *value) {
 
     ObjectTraceData *val_td = get_trace_data(value);
     if (val_td) {
-        DatabaseObject *db = (DatabaseObject *)g_state.db;
-        if ((Py_ssize_t)td->id < db->objects_len) {
-            ObjectRecordData *orec = &db->objects[td->id];
-            SMap_set(&orec->members, name_str, (void *)(intptr_t)val_td->id);
-        }
+        SMap_set(&td->members, name_str, (void *)(intptr_t)val_td->id);
     }
 }
 
@@ -840,6 +829,12 @@ static int handle_return(PyObject *py_frame, PyFrameObject *frame_obj) {
                 memcpy(entry->record->control_flow, entry->branch_buf, entry->branch_len);
                 entry->record->control_flow_len = entry->branch_len;
             }
+        }
+
+        /* The record is complete: move it out of process memory. */
+        if (entry->record) {
+            db_complete_call((DatabaseObject *)g_state.db, entry->record);
+            entry->record = NULL;
         }
 
         frame_stack_pop(frame_obj);
@@ -1116,8 +1111,7 @@ static void record_ipc(const char *name) {
      * are not dropped; current_record() returns NULL under taint. */
     CallRecordData *cur = current_record();
     if (!cur) return;
-    uint64_t call_id = cur->call_id;
-    db_add_ipc_entry((DatabaseObject *)g_state.db, name, (int64_t)call_id);
+    writer_push_ipc(name, (int64_t)cur->call_id);
 }
 
 void d3g_shm_open_hook(const char *name) {
@@ -1208,8 +1202,8 @@ void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) 
     if (!cur) return;
     uint64_t call_id = cur->call_id;
 
-    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
-                 (uint64_t)offset, (uint64_t)length, IO_OP_READ);
+    writer_push_io_op(rec->id, call_id, (uint64_t)offset, (uint64_t)length,
+                      IO_OP_READ);
 }
 
 void d3g_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length) {
@@ -1226,8 +1220,8 @@ void d3g_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length)
     if (!cur) return;
     uint64_t call_id = cur->call_id;
 
-    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
-                 (uint64_t)offset, (uint64_t)length, IO_OP_WRITE);
+    writer_push_io_op(rec->id, call_id, (uint64_t)offset, (uint64_t)length,
+                      IO_OP_WRITE);
 }
 
 /* ---- inherited fd enumeration ---- */
@@ -1316,8 +1310,7 @@ void d3g_fileio_read_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
     off_t pos = lseek(fd, 0, SEEK_CUR);
     uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
 
-    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
-                 offset, (uint64_t)n, IO_OP_READ);
+    writer_push_io_op(rec->id, call_id, offset, (uint64_t)n, IO_OP_READ);
 }
 
 void d3g_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
@@ -1338,8 +1331,7 @@ void d3g_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
     off_t pos = lseek(fd, 0, SEEK_CUR);
     uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
 
-    db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
-                 offset, (uint64_t)n, IO_OP_WRITE);
+    writer_push_io_op(rec->id, call_id, offset, (uint64_t)n, IO_OP_WRITE);
 }
 
 /* ---- fork child cleanup ---- */
@@ -1384,6 +1376,21 @@ void d3g_after_fork_child_hook(void) {
 clear:
     db_clear_records(db);
 
+    /* The ring was reset by the pthread_atfork child handler (writer.c);
+     * start a fresh writer for this pid. The function table is interned
+     * per process, and the child inherits the parent's entries, so replay
+     * them: nothing else would ever emit those rows here. */
+    if (writer_start() == 0) {
+        SMap *fm = &g_state.func_to_id;
+        if (fm->entries) {
+            for (size_t i = 0; i < fm->capacity; i++) {
+                if (!fm->entries[i].occupied) continue;
+                writer_push_function((int32_t)(intptr_t)fm->entries[i].value,
+                                     fm->entries[i].key);
+            }
+        }
+    }
+
     for (size_t i = 0; i < n_active; i++) {
         CallRecordData *h = &active[i].header;
         active[i].entry->record = db_add_call(db, h->call_id, h->function_id,
@@ -1417,41 +1424,53 @@ void d3g_gen_iter_hook(_PyInterpreterFrame *caller, int exhausted) {
 
 /* ---- at-exit serialization ---- */
 
-/* Write this process's trace to $PYTHON_TRACER_OUTDIR/{pid}.db and
- * disable tracing. Idempotent. Called from the interpreter's normal exit
- * path (Modules/main.c) and from os._exit(), which otherwise skips all
- * cleanup and would lose a forked child's trace.
+/* Finish this process's trace: disable tracing, hand every still-live
+ * call and object record to the writer, and join the writer thread so
+ * $PYTHON_TRACER_OUTDIR/{pid}.db is complete on return. Idempotent.
+ * Called from uninstall(), the interpreter's normal exit path
+ * (Modules/main.c), and os._exit(), which otherwise skips all cleanup and
+ * would lose a forked child's in-flight records.
  *
- * A process that recorded no calls never ran traced code: this is the
- * case for incidental subprocesses that merely inherit PYTHON_TRACER_CONFIG
- * (e.g. multiprocessing's resource tracker). Such processes write nothing,
- * so they don't litter the output directory with empty databases. Any
- * ipc/io rows they might hold carry call_id 0 and are unusable anyway. */
+ * Completed records were streamed while the program ran, so a process
+ * killed before reaching this point still leaves every returned call in
+ * its database; only the records in flight at that moment are lost.
+ *
+ * A process that recorded no calls never ran traced code (e.g.
+ * multiprocessing's resource tracker); the writer never opens a file for
+ * it, so such processes don't litter the output directory. */
 void d3g_flush_trace(void) {
     if (!g_state.enabled) return;
     g_state.enabled = 0;
+    d3g_signals_uninstall();
 
     DatabaseObject *db = (DatabaseObject *)g_state.db;
-    if (!db || db->calls_len == 0) return;
+    if (!db || !writer_running()) return;
 
-    const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
-    if (!outdir) return;
+    db_complete_all_calls(db);
 
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/%d.db", outdir, getpid());
-    tracer_serialize_db(db, path);
+    UMap *ex = &g_state.object_extras;
+    if (ex->entries) {
+        for (size_t i = 0; i < ex->capacity; i++) {
+            if (!ex->entries[i].occupied) continue;
+            ObjectTraceData *td = (ObjectTraceData *)ex->entries[i].value;
+            emit_object_record(td);
+        }
+    }
+
+    writer_stop();
 }
 
 /* ---- Python-visible functions ---- */
 
 static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
     static char *kwlist[] = {"prefixes", "db",
-                             "path_filter", "taint_patterns", NULL};
+                             "path_filter", "taint_patterns", "traceall", NULL};
     PyObject *prefixes_list, *db, *path_filter;
     PyObject *taint_patterns = Py_None;
+    int traceall = 0;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|O", kwlist,
-            &prefixes_list, &db, &path_filter, &taint_patterns))
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|Op", kwlist,
+            &prefixes_list, &db, &path_filter, &taint_patterns, &traceall))
         return NULL;
 
     /* clean up old state */
@@ -1505,8 +1524,15 @@ static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
         }
     }
 
+    g_state.traceall = traceall;
     g_state.next_call_id = 1;
+
+    if (writer_start() < 0) {
+        PyErr_SetString(PyExc_RuntimeError, "cannot start trace writer thread");
+        return NULL;
+    }
     g_state.enabled = 1;
+    d3g_signals_install();
 
     Py_RETURN_NONE;
 }
@@ -1516,7 +1542,7 @@ static PyObject *py_install_thread(PyObject *self, PyObject *Py_UNUSED(args)) {
 }
 
 static PyObject *py_uninstall(PyObject *self, PyObject *Py_UNUSED(args)) {
-    g_state.enabled = 0;
+    d3g_flush_trace();
     Py_RETURN_NONE;
 }
 

@@ -13,11 +13,16 @@
     (obj) == Py_None || (obj) == Py_True || (obj) == Py_False \
 )
 
-/* Per-object trace data stored in PyTrace_Hashtable */
+/* Per-object trace data, keyed by PyObject* in g_state.object_extras.
+ * `members` is the object record (objects/members tables) built up over
+ * the object's lifetime; at deallocation (or at flush for objects still
+ * alive) it is moved to the writer thread. */
 typedef struct {
     uint64_t id;
     ARWMap attrs;
     char type;
+    uint64_t call_id;   /* constructing call; currently always 0 */
+    SMap members;       /* attr/key -> child object id */
 } ObjectTraceData;
 
 /* Per-frame entry on the trace stack */
@@ -40,6 +45,8 @@ typedef struct {
 typedef struct {
     uint64_t next_call_id;
     int enabled;
+    int traceall;             /* trace every call and class regardless of
+                                 prefixes/classes; taint still applies */
 
     PyObject *db;             /* DatabaseObject* */
     PyObject *filter;         /* PathFilterObject* */

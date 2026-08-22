@@ -9,16 +9,16 @@
 
 typedef struct {
     uint64_t caller_id;
-    int32_t call_lineno;
-} AttrRecordWriteData;
-
-typedef struct {
-    uint64_t caller_id;
     int32_t write_call_lineno;
     int32_t read_call_lineno;
 } AttrRecordReadData;
 
-typedef struct {
+/* A call record lives in the database's live list from the call's RESUME
+ * until its return, accumulating attr_reads and (at return) control_flow.
+ * On return it is unlinked and handed to the writer thread (writer.h),
+ * which owns and frees it after serialization. Records never move while
+ * live: FrameEntry.record holds a pointer for the call's lifetime. */
+typedef struct CallRecordData {
     uint64_t call_id;
     int32_t function_id;
     uint64_t caller_id;
@@ -29,17 +29,8 @@ typedef struct {
     AttrRecordReadData *attr_reads;
     Py_ssize_t attr_reads_len;
     Py_ssize_t attr_reads_cap;
+    struct CallRecordData *prev, *next;   /* live list links */
 } CallRecordData;
-
-typedef struct {
-    uint64_t call_id;
-    SMap members;
-} ObjectRecordData;
-
-typedef struct {
-    char *name;      /* channel identity, e.g. "shm:/psm_…", "sock:'…'" */
-    int64_t call_id; /* traced call that performed the operation */
-} IpcRecordData;
 
 typedef struct IoObjectRecord {
     char *name;
@@ -52,67 +43,47 @@ typedef enum {
     IO_OP_WRITE,
 } IoOpType;
 
-typedef struct {
-    IoObjectRecord *io_object;
-    uint64_t call_id;
-    uint64_t offset;
-    uint64_t length;
-    IoOpType op_type;
-} IoOpRecord;
-
-/* ---- Database (Python type with C array storage) ---- */
+/* ---- Database (Python type holding the in-flight state) ---- */
 
 typedef struct {
     PyObject_HEAD
-    /* Array of pointers: FrameEntry.record holds a CallRecordData* for the
-     * lifetime of the call, so records must not move when the array grows. */
-    CallRecordData **calls;
-    Py_ssize_t calls_len, calls_cap;
-    ObjectRecordData *objects;
-    Py_ssize_t objects_len, objects_cap;
-    IpcRecordData *ipc;
-    Py_ssize_t ipc_len, ipc_cap;
-    IoObjectRecord **io_objects;
-    Py_ssize_t io_objects_len, io_objects_cap;
-    IoOpRecord *io_ops;
-    Py_ssize_t io_ops_len, io_ops_cap;
+    CallRecordData *live_head;     /* calls that have not returned */
+    Py_ssize_t live_count;
+    uint64_t calls_total;          /* calls recorded in this process */
     uint32_t next_io_object_id;
-    SMap arw_map;
 } DatabaseObject;
 
 extern PyTypeObject *DatabaseType;
 
 /* ---- Database helpers ---- */
 
+/* Allocate a call record and link it into the live list. */
 CallRecordData *db_add_call(DatabaseObject *db,
                             uint64_t call_id, int32_t function_id,
                             uint64_t caller_id, int32_t call_lineno,
                             int32_t obj_id);
 
-Py_ssize_t db_add_object(DatabaseObject *db, uint64_t call_id);
+/* Unlink a returned call and hand it to the writer. */
+void db_complete_call(DatabaseObject *db, CallRecordData *rec);
 
-void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t call_id);
+/* Hand every live call to the writer without unlinking semantics mattering
+ * (used at flush; tracing must be disabled first so no hook touches the
+ * records afterwards). */
+void db_complete_all_calls(DatabaseObject *db);
 
+/* Allocate an io object record, assign its id, and emit its row. The
+ * returned record stays owned by the caller (it is referenced from the
+ * io_object_records map for the lifetime of the Python object). */
 IoObjectRecord *db_add_io_object(DatabaseObject *db, const char *name,
                                  uint64_t offset);
-
-void db_add_io_op(DatabaseObject *db, IoObjectRecord *io_object, uint64_t call_id,
-                  uint64_t offset, uint64_t length, IoOpType op_type);
 
 void db_add_attr_read(CallRecordData *rec,
                       uint64_t caller_id,
                       int32_t write_call_lineno,
                       int32_t read_call_lineno);
 
-void db_set_arw(DatabaseObject *db, int32_t obj_id, const char *attr_name,
-                uint64_t caller_id, int32_t call_lineno);
-
-AttrRecordWriteData *db_get_arw(DatabaseObject *db, int32_t obj_id,
-                                const char *attr_name);
-
+/* Free every live call record (forked child: the parent owns that history). */
 void db_clear_records(DatabaseObject *db);
-
-int tracer_serialize_db(DatabaseObject *db, const char *path);
 
 int records_init(PyObject *module);
 

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import glob
 import os
+import shutil
 import sqlite3
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -709,11 +712,93 @@ def postprocess(db_path: str) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Offline merge of per-process traces
+# ---------------------------------------------------------------------------
+
+MERGED_NAME = "trace.db"
+
+
+def merge_traces(output_dir: str) -> str:
+    """Merge every per-process {pid}.db in output_dir into trace.db.
+
+    Offline and repeatable: the inputs are left in place and trace.db is
+    regenerated from them on every call, so a process that exited after an
+    earlier merge (e.g. multiprocessing's resource tracker, which outlives
+    the parent) is included by simply running again.
+
+    Rows are already keyed by pid, so tables are unioned as-is, except
+    `functions`: function_id values are interned per process and would
+    collide, so the child's functions are re-keyed by ref and its calls
+    rewritten to the merged ids.
+    """
+    merged_path = os.path.join(output_dir, MERGED_NAME)
+    inputs = sorted(
+        p for p in glob.glob(os.path.join(output_dir, "*.db"))
+        if os.path.basename(p) != MERGED_NAME
+    )
+    if not inputs:
+        raise SystemExit(f"no per-process trace databases in {output_dir}")
+
+    # Build in a file that no later run could mistake for an input.
+    fd, tmp_path = tempfile.mkstemp(suffix=".merging", dir=output_dir)
+    os.close(fd)
+    shutil.copy2(inputs[0], tmp_path)
+    conn = sqlite3.connect(tmp_path)
+    for db_path in inputs[1:]:
+        try:
+            conn.execute("ATTACH DATABASE ? AS child", (db_path,))
+
+            fmap: dict[int, int] = {}
+            for fid, ref in conn.execute(
+                    "SELECT function_id, ref FROM child.functions").fetchall():
+                row = conn.execute(
+                    "SELECT function_id FROM functions WHERE ref = ?", (ref,)).fetchone()
+                if row is None:
+                    cur = conn.execute("INSERT INTO functions (ref) VALUES (?)", (ref,))
+                    fmap[fid] = cur.lastrowid
+                else:
+                    fmap[fid] = row[0]
+
+            conn.execute("INSERT OR IGNORE INTO meta SELECT * FROM child.meta")
+            for pid, call_id, fid, caller_id, lineno, obj_id, cf in conn.execute(
+                    "SELECT pid, call_id, function_id, caller_id, call_lineno, "
+                    "obj_id, control_flow FROM child.calls").fetchall():
+                conn.execute(
+                    "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (pid, call_id, fmap.get(fid, fid), caller_id, lineno, obj_id, cf))
+            for table in ("attr_reads", "objects", "members", "ipc",
+                          "io_objects", "io_ops"):
+                conn.execute(f"INSERT INTO {table} SELECT * FROM child.{table}")
+
+            # SQLite refuses to DETACH a database used by the open transaction.
+            conn.commit()
+            conn.execute("DETACH DATABASE child")
+        except sqlite3.Error as e:
+            print(f"Failed to merge {db_path}: {e}", file=sys.stderr)
+            try:
+                conn.rollback()
+                conn.execute("DETACH DATABASE child")
+            except Exception:
+                pass
+    conn.commit()
+    conn.close()
+    os.replace(tmp_path, merged_path)
+    print(f"Merged {len(inputs)} trace(s) into {merged_path}", file=sys.stderr)
+    return merged_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="python-tracer postprocessor")
-    parser.add_argument("db", help="path to trace SQLite database")
+    parser.add_argument(
+        "target",
+        help="trace output directory (its per-process {pid}.db files are merged "
+             "into trace.db, which is then postprocessed) or a single trace database")
     args = parser.parse_args()
-    postprocess(args.db)
+    target = args.target
+    if os.path.isdir(target):
+        target = merge_traces(target)
+    postprocess(target)
 
 
 if __name__ == "__main__":

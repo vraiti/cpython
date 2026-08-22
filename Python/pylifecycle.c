@@ -1,6 +1,7 @@
 /* Python interpreter top-level routines, including init/exit */
 
 #include "Python.h"
+#include "tracer_hooks.h"
 #include "pycore_audit.h"         // _PySys_ClearAuditHooks()
 #include "pycore_call.h"          // _PyObject_CallMethod()
 #include "pycore_ceval.h"         // _PyEval_FiniGIL()
@@ -2047,6 +2048,11 @@ _Py_Finalize(_PyRuntimeState *runtime)
 
     _PyAtExit_Call(tstate->interp);
 
+    /* Last point at which the trace can be completed with the interpreter
+     * intact: covers every exit that reaches finalization (normal return,
+     * sys.exit, SystemExit/KeyboardInterrupt raised from a signal handler). */
+    d3g_flush_trace();
+
     /* Clean up any lingering subinterpreters.
 
        Two preconditions need to be met here:
@@ -3615,7 +3621,7 @@ PyOS_setsig(int sig, PyOS_sighandler_t handler)
      * changes to invalidate that assumption.
      */
     struct sigaction context, ocontext;
-    context.sa_handler = handler;
+    context.sa_handler = d3g_setsig_substitute(sig, handler);
     sigemptyset(&context.sa_mask);
     /* Using SA_ONSTACK is friendlier to other C/C++/Golang-VM code that
      * extension module or embedding code may use where tiny thread stacks
@@ -3623,7 +3629,7 @@ PyOS_setsig(int sig, PyOS_sighandler_t handler)
     context.sa_flags = SA_ONSTACK;
     if (sigaction(sig, &context, &ocontext) == -1)
         return SIG_ERR;
-    return ocontext.sa_handler;
+    return d3g_setsig_report(ocontext.sa_handler);
 #else
     PyOS_sighandler_t oldhandler;
     oldhandler = signal(sig, handler);

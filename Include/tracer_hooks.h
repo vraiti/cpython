@@ -39,6 +39,13 @@ TRACER_API void d3g_sem_acquire_hook(const char *name);
 TRACER_API void d3g_sem_release_hook(const char *name);
 TRACER_API void d3g_enumerate_fds(void);
 TRACER_API void d3g_flush_trace(void);
+
+/* SIG_DFL interception (Modules/_tracer/signals.c). */
+TRACER_API PyOS_sighandler_t d3g_setsig_substitute(int sig, PyOS_sighandler_t handler);
+TRACER_API PyOS_sighandler_t d3g_setsig_report(PyOS_sighandler_t old);
+TRACER_API void d3g_check_pending_signals(void);
+TRACER_API void d3g_signals_install(void);
+TRACER_API void d3g_signals_uninstall(void);
 TRACER_API void d3g_gen_iter_hook(struct _PyInterpreterFrame *caller, int exhausted);
 
 #endif
