@@ -36,13 +36,34 @@ def _merge_dbs(output_dir: str, all_dbs: list[str]) -> None:
     for db_path in rest:
         try:
             conn.execute("ATTACH DATABASE ? AS child", (db_path,))
+
+            # function_id values are interned per process, so the child's
+            # ids collide with the parent's. Re-key the child's functions by
+            # ref and rewrite its calls to the merged ids.
+            fmap: dict[int, int] = {}
+            for fid, ref in conn.execute(
+                    "SELECT function_id, ref FROM child.functions").fetchall():
+                row = conn.execute(
+                    "SELECT function_id FROM functions WHERE ref = ?", (ref,)).fetchone()
+                if row is None:
+                    cur = conn.execute("INSERT INTO functions (ref) VALUES (?)", (ref,))
+                    fmap[fid] = cur.lastrowid
+                else:
+                    fmap[fid] = row[0]
+
             conn.execute("INSERT OR IGNORE INTO meta SELECT * FROM child.meta")
-            conn.execute("INSERT OR IGNORE INTO functions SELECT * FROM child.functions")
-            conn.execute("INSERT INTO calls SELECT * FROM child.calls")
-            conn.execute("INSERT INTO attr_reads SELECT * FROM child.attr_reads")
-            conn.execute("INSERT INTO objects SELECT * FROM child.objects")
-            conn.execute("INSERT INTO members SELECT * FROM child.members")
-            conn.execute("INSERT INTO ipc SELECT * FROM child.ipc")
+            for pid, call_id, fid, caller_id, lineno, obj_id, cf in conn.execute(
+                    "SELECT pid, call_id, function_id, caller_id, call_lineno, "
+                    "obj_id, control_flow FROM child.calls").fetchall():
+                conn.execute(
+                    "INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (pid, call_id, fmap.get(fid, fid), caller_id, lineno, obj_id, cf))
+            for table in ("attr_reads", "objects", "members", "ipc",
+                          "io_objects", "io_ops"):
+                conn.execute(f"INSERT INTO {table} SELECT * FROM child.{table}")
+
+            # SQLite refuses to DETACH a database used by the open transaction.
+            conn.commit()
             conn.execute("DETACH DATABASE child")
         except sqlite3.Error as e:
             print(f"Failed to merge {db_path}: {e}", file=sys.stderr)
@@ -77,6 +98,10 @@ def main() -> None:
         if resolved:
             script = resolved
 
+    # Compile under the absolute path: the scope filter compares
+    # co_filename against absolute module prefixes, so a relative script
+    # path would leave the script's own code untraced.
+    script = os.path.abspath(script)
     with open(script) as f:
         code = compile(f.read(), script, "exec")
 

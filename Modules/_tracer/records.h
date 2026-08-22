@@ -37,8 +37,8 @@ typedef struct {
 } ObjectRecordData;
 
 typedef struct {
-    char *name;
-    int64_t obj_idx;
+    char *name;      /* channel identity, e.g. "shm:/psm_…", "sock:'…'" */
+    int64_t call_id; /* traced call that performed the operation */
 } IpcRecordData;
 
 typedef struct IoObjectRecord {
@@ -64,7 +64,9 @@ typedef struct {
 
 typedef struct {
     PyObject_HEAD
-    CallRecordData *calls;
+    /* Array of pointers: FrameEntry.record holds a CallRecordData* for the
+     * lifetime of the call, so records must not move when the array grows. */
+    CallRecordData **calls;
     Py_ssize_t calls_len, calls_cap;
     ObjectRecordData *objects;
     Py_ssize_t objects_len, objects_cap;
@@ -89,7 +91,7 @@ CallRecordData *db_add_call(DatabaseObject *db,
 
 Py_ssize_t db_add_object(DatabaseObject *db, uint64_t call_id);
 
-void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t obj_idx);
+void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t call_id);
 
 IoObjectRecord *db_add_io_object(DatabaseObject *db, const char *name,
                                  uint64_t offset);

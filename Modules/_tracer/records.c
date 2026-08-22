@@ -16,12 +16,14 @@ CallRecordData *db_add_call(DatabaseObject *db,
                             int32_t obj_id) {
     if (db->calls_len >= db->calls_cap) {
         Py_ssize_t new_cap = db->calls_cap ? db->calls_cap * 2 : INITIAL_CAP;
-        CallRecordData *tmp = realloc(db->calls, new_cap * sizeof(CallRecordData));
+        CallRecordData **tmp = realloc(db->calls, new_cap * sizeof(CallRecordData *));
         if (!tmp) return NULL;
         db->calls = tmp;
         db->calls_cap = new_cap;
     }
-    CallRecordData *rec = &db->calls[db->calls_len++];
+    CallRecordData *rec = malloc(sizeof(CallRecordData));
+    if (!rec) return NULL;
+    db->calls[db->calls_len++] = rec;
     rec->call_id = call_id;
     rec->function_id = function_id;
     rec->caller_id = caller_id;
@@ -50,7 +52,7 @@ Py_ssize_t db_add_object(DatabaseObject *db, uint64_t call_id) {
     return idx;
 }
 
-void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t obj_idx) {
+void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t call_id) {
     if (db->ipc_len >= db->ipc_cap) {
         Py_ssize_t new_cap = db->ipc_cap ? db->ipc_cap * 2 : 16;
         IpcRecordData *tmp = realloc(db->ipc, new_cap * sizeof(IpcRecordData));
@@ -60,7 +62,7 @@ void db_add_ipc_entry(DatabaseObject *db, const char *name, int64_t obj_idx) {
     }
     IpcRecordData *entry = &db->ipc[db->ipc_len++];
     entry->name = strdup(name);
-    entry->obj_idx = obj_idx;
+    entry->call_id = call_id;
 }
 
 IoObjectRecord *db_add_io_object(DatabaseObject *db, const char *name,
@@ -145,9 +147,14 @@ AttrRecordWriteData *db_get_arw(DatabaseObject *db, int32_t obj_id,
 }
 
 void db_clear_records(DatabaseObject *db) {
+    /* Callers holding CallRecordData* into this array (FrameEntry.record of
+     * frames still active in a forked child) must re-create their records
+     * afterwards; see d3g_after_fork_child_hook. */
     for (Py_ssize_t i = 0; i < db->calls_len; i++) {
-        free(db->calls[i].control_flow);
-        free(db->calls[i].attr_reads);
+        free(db->calls[i]->control_flow);
+        free(db->calls[i]->attr_reads);
+        free(db->calls[i]);
+        db->calls[i] = NULL;
     }
     db->calls_len = 0;
 
@@ -192,8 +199,9 @@ static void Database_dealloc(PyObject *self) {
     DatabaseObject *o = (DatabaseObject *)self;
 
     for (Py_ssize_t i = 0; i < o->calls_len; i++) {
-        free(o->calls[i].control_flow);
-        free(o->calls[i].attr_reads);
+        free(o->calls[i]->control_flow);
+        free(o->calls[i]->attr_reads);
+        free(o->calls[i]);
     }
     free(o->calls);
 
@@ -223,10 +231,10 @@ static void Database_dealloc(PyObject *self) {
 static PyObject *Database_add_ipc(PyObject *self, PyObject *args) {
     DatabaseObject *o = (DatabaseObject *)self;
     const char *name;
-    long long obj_idx;
-    if (!PyArg_ParseTuple(args, "sL", &name, &obj_idx))
+    long long call_id;
+    if (!PyArg_ParseTuple(args, "sL", &name, &call_id))
         return NULL;
-    db_add_ipc_entry(o, name, (int64_t)obj_idx);
+    db_add_ipc_entry(o, name, (int64_t)call_id);
     Py_RETURN_NONE;
 }
 
@@ -278,7 +286,7 @@ static const char *SCHEMA_SQL =
     "CREATE TABLE ipc ("
     "    pid INTEGER NOT NULL,"
     "    name TEXT NOT NULL,"
-    "    obj_idx INTEGER NOT NULL"
+    "    call_id INTEGER NOT NULL"
     ");"
     "CREATE TABLE io_objects ("
     "    pid INTEGER NOT NULL,"
@@ -371,7 +379,7 @@ int tracer_serialize_db(DatabaseObject *o, const char *path) {
             "INSERT INTO attr_reads VALUES (?,?,?,?,?)", -1, &ar_st, NULL);
 
         for (Py_ssize_t i = 0; i < o->calls_len; i++) {
-            CallRecordData *rec = &o->calls[i];
+            CallRecordData *rec = o->calls[i];
             uint64_t caller = rec->caller_id == TAINT_ID ? 0 : rec->caller_id;
 
             sqlite3_bind_int(call_st, 1, pid);
@@ -446,7 +454,7 @@ int tracer_serialize_db(DatabaseObject *o, const char *path) {
             IpcRecordData *entry = &o->ipc[i];
             sqlite3_bind_int(st, 1, pid);
             sqlite3_bind_text(st, 2, entry->name, -1, SQLITE_STATIC);
-            sqlite3_bind_int64(st, 3, (sqlite3_int64)entry->obj_idx);
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)entry->call_id);
             sqlite3_step(st);
             sqlite3_reset(st);
         }

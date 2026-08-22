@@ -85,15 +85,18 @@ def reconstruct_executed_stmts(
     func_node: ast.FunctionDef | ast.AsyncFunctionDef,
     cf_blob: bytes | None,
 ) -> list[ast.stmt]:
+    # The runtime (d3g_branch_hook) appends one byte per executed conditional
+    # jump, in execution order: 0 when the jump is not taken (an if-body
+    # runs; a loop yields another item), 1 when it is taken (the else branch
+    # runs; the loop is exhausted).
     blob = cf_blob or b""
-    bit_pos = [0]
+    pos = [0]
 
-    def consume() -> int:
-        byte_idx = bit_pos[0] // 8
-        if byte_idx >= len(blob):
-            return 0
-        val = (blob[byte_idx] >> (bit_pos[0] % 8)) & 1
-        bit_pos[0] += 1
+    def consume() -> int | None:
+        if pos[0] >= len(blob):
+            return None
+        val = blob[pos[0]]
+        pos[0] += 1
         return val
 
     executed: list[ast.stmt] = []
@@ -102,33 +105,15 @@ def reconstruct_executed_stmts(
         for stmt in stmts:
             executed.append(stmt)
 
-            if isinstance(stmt, (ast.For, ast.AsyncFor)):
-                while bit_pos[0] // 8 < len(blob):
-                    decision = consume()
-                    if decision == 1:
-                        walk_body(stmt.body)
-                    else:
-                        break
-                else:
-                    consume()
-                if stmt.orelse:
-                    walk_body(stmt.orelse)
-
-            elif isinstance(stmt, ast.While):
-                while bit_pos[0] // 8 < len(blob):
-                    decision = consume()
-                    if decision == 1:
-                        walk_body(stmt.body)
-                    else:
-                        break
-                else:
-                    consume()
+            if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                while consume() == 0:
+                    walk_body(stmt.body)
                 if stmt.orelse:
                     walk_body(stmt.orelse)
 
             elif isinstance(stmt, ast.If):
                 decision = consume()
-                if decision == 1:
+                if decision == 0:
                     walk_body(stmt.body)
                 elif stmt.orelse:
                     walk_body(stmt.orelse)
@@ -429,7 +414,7 @@ def resolve_ipc_edges(
     from collections import defaultdict
 
     channels: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for pid, name, call_id in c.execute("SELECT pid, name, obj_idx FROM ipc"):
+    for pid, name, call_id in c.execute("SELECT pid, name, call_id FROM ipc"):
         if call_id > 0:
             channels[name].append((pid, call_id))
 

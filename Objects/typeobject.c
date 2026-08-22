@@ -1,6 +1,7 @@
 /* Type object implementation */
 
 #include "Python.h"
+#include "tracer_hooks.h"
 #include "pycore_abstract.h"      // _PySequence_IterSearch()
 #include "pycore_call.h"          // _PyObject_VectorcallTstate()
 #include "pycore_code.h"          // CO_FAST_FREE
@@ -2625,6 +2626,11 @@ subtype_dealloc(PyObject *self)
     /* Extract the type; we expect it to be a heap type */
     type = Py_TYPE(self);
     _PyObject_ASSERT((PyObject *)type, type->tp_flags & Py_TPFLAGS_HEAPTYPE);
+
+    /* Release any d3g tracking state keyed on this address before the
+     * object can be freed and the address reused. Idempotent, so a later
+     * resurrection followed by a second dealloc is harmless. */
+    d3g_container_dealloc_hook(self);
 
     /* Test whether the type has GC exactly once */
 
@@ -6847,8 +6853,6 @@ object_init(PyObject *self, PyObject *args, PyObject *kwds)
     }
     return 0;
 }
-
-#include "tracer_hooks.h"
 
 static PyObject *
 object_new(PyTypeObject *type, PyObject *args, PyObject *kwds)

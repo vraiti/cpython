@@ -71,36 +71,12 @@ static void free_trace_data(ObjectTraceData *data) {
     free(data);
 }
 
-/* weakref finalizer: called when a tracked object is deallocated */
-
-typedef struct {
-    PyObject_HEAD
-    uintptr_t obj_key;
-} ExtraCleanupObject;
-
-static PyObject *extra_cleanup_call(PyObject *self, PyObject *args, PyObject *kw) {
-    ExtraCleanupObject *ec = (ExtraCleanupObject *)self;
-    intptr_t val;
-    if (umap_get(&g_state.object_extras, ec->obj_key, &val)) {
-        umap_delete(&g_state.object_extras, ec->obj_key);
-        free_trace_data((ObjectTraceData *)val);
-    }
-    Py_RETURN_NONE;
-}
-
-static PyType_Slot ExtraCleanup_slots[] = {
-    {Py_tp_call, extra_cleanup_call},
-    {0, NULL},
-};
-
-static PyType_Spec ExtraCleanup_spec = {
-    .name = "_tracer.ExtraCleanup",
-    .basicsize = sizeof(ExtraCleanupObject),
-    .flags = Py_TPFLAGS_DEFAULT,
-    .slots = ExtraCleanup_slots,
-};
-
-static PyTypeObject *ExtraCleanupType = NULL;
+/* Tracked objects are finalized from their type's tp_dealloc
+ * (d3g_container_dealloc_hook): subtype_dealloc for heap-type instances,
+ * and the per-type dealloc functions for dict/list/set/deque/tuple/
+ * bytearray. A weakref callback was used previously, but the weakref was
+ * released immediately after creation, so its callback never ran and
+ * entries outlived their objects. */
 
 
 /* ---- per-coroutine frame stacks (thread-local) ---- */
@@ -330,21 +306,10 @@ static ObjectTraceData *attach_typed_container_trace_data(PyObject *obj, Contain
     return new_typed_container_trace_data(obj, type);
 }
 
-/* For arbitrary heap-type instances (tracked via object_new): these always
- * support weakrefs, so a weakref finalizer is how we learn they were freed. */
+/* For heap-type instances tracked via object_new. Finalized from
+ * subtype_dealloc (Objects/typeobject.c) through d3g_container_dealloc_hook. */
 static void attach_trace_data(PyObject *obj) {
     new_trace_data(obj);
-
-    ExtraCleanupObject *ec = (ExtraCleanupObject *)PyObject_CallNoArgs(
-        (PyObject *)ExtraCleanupType);
-    if (ec) {
-        ec->obj_key = (uintptr_t)obj;
-        PyObject *weakref = PyWeakref_NewRef(obj, (PyObject *)ec);
-        Py_XDECREF(weakref);
-        Py_DECREF(ec);
-    } else {
-        PyErr_Clear();
-    }
 }
 
 /* For dict/list/set/deque instances: dict and list don't support weakrefs
@@ -527,7 +492,9 @@ void d3g_global_delete_hook(PyObject *globals, PyObject *name) {
 
 void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
     if (!g_state.enabled) return;
-    if (frame->call_id == 0) return;
+    /* 0: untraced frame; UINT64_MAX: taint-excluded frame, whose decisions
+     * must not be appended to the enclosing traced call. */
+    if (frame->call_id == 0 || frame->call_id == UINT64_MAX) return;
 
     PyFrameObject *frame_obj = frame->frame_obj;
     if (!frame_obj) return;
@@ -1144,10 +1111,12 @@ void d3g_c_return_hook(_PyInterpreterFrame *frame) {
 static void record_ipc(const char *name) {
     if (!g_state.enabled) return;
     if (!g_state.db) return;
-    PyFrameObject *frame = PyEval_GetFrame();
-    if (!frame) return;
-    uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == UINT64_MAX) return;
+    /* Attribute to the nearest traced call, so events reached through
+     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
+     * are not dropped; current_record() returns NULL under taint. */
+    CallRecordData *cur = current_record();
+    if (!cur) return;
+    uint64_t call_id = cur->call_id;
     db_add_ipc_entry((DatabaseObject *)g_state.db, name, (int64_t)call_id);
 }
 
@@ -1232,10 +1201,12 @@ void d3g_mmap_read_hook(PyObject *mmap_obj, long long offset, long long length) 
     IoObjectRecord *rec = get_io_object_record(mmap_obj);
     if (!rec) return;
 
-    PyFrameObject *frame = PyEval_GetFrame();
-    if (!frame) return;
-    uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == UINT64_MAX) return;
+    /* Attribute to the nearest traced call, so events reached through
+     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
+     * are not dropped; current_record() returns NULL under taint. */
+    CallRecordData *cur = current_record();
+    if (!cur) return;
+    uint64_t call_id = cur->call_id;
 
     db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
                  (uint64_t)offset, (uint64_t)length, IO_OP_READ);
@@ -1248,10 +1219,12 @@ void d3g_mmap_write_hook(PyObject *mmap_obj, long long offset, long long length)
     IoObjectRecord *rec = get_io_object_record(mmap_obj);
     if (!rec) return;
 
-    PyFrameObject *frame = PyEval_GetFrame();
-    if (!frame) return;
-    uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == UINT64_MAX) return;
+    /* Attribute to the nearest traced call, so events reached through
+     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
+     * are not dropped; current_record() returns NULL under taint. */
+    CallRecordData *cur = current_record();
+    if (!cur) return;
+    uint64_t call_id = cur->call_id;
 
     db_add_io_op((DatabaseObject *)g_state.db, rec, call_id,
                  (uint64_t)offset, (uint64_t)length, IO_OP_WRITE);
@@ -1290,13 +1263,15 @@ void d3g_enumerate_fds(void) {
 
 void d3g_sem_acquire_hook(const char *name) {
     char buf[300];
-    snprintf(buf, sizeof(buf), "sem_acquire:%s", name ? name : "?");
+    /* Channel identity only: resolve_ipc_edges pairs rows by exact name
+     * across processes, so acquire and release must share it. */
+    snprintf(buf, sizeof(buf), "sem:%s", name ? name : "?");
     record_ipc(buf);
 }
 
 void d3g_sem_release_hook(const char *name) {
     char buf[300];
-    snprintf(buf, sizeof(buf), "sem_release:%s", name ? name : "?");
+    snprintf(buf, sizeof(buf), "sem:%s", name ? name : "?");
     record_ipc(buf);
 }
 
@@ -1331,10 +1306,12 @@ void d3g_fileio_read_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
     IoObjectRecord *rec = get_io_object_record(fileio_obj);
     if (!rec) return;
 
-    PyFrameObject *frame = PyEval_GetFrame();
-    if (!frame) return;
-    uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == UINT64_MAX) return;
+    /* Attribute to the nearest traced call, so events reached through
+     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
+     * are not dropped; current_record() returns NULL under taint. */
+    CallRecordData *cur = current_record();
+    if (!cur) return;
+    uint64_t call_id = cur->call_id;
 
     off_t pos = lseek(fd, 0, SEEK_CUR);
     uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
@@ -1351,10 +1328,12 @@ void d3g_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
     IoObjectRecord *rec = get_io_object_record(fileio_obj);
     if (!rec) return;
 
-    PyFrameObject *frame = PyEval_GetFrame();
-    if (!frame) return;
-    uint64_t call_id = get_frame_call_id(frame);
-    if (call_id == 0 || call_id == UINT64_MAX) return;
+    /* Attribute to the nearest traced call, so events reached through
+     * library wrappers (SharedMemory.__init__, Lib/signal.py, io layers)
+     * are not dropped; current_record() returns NULL under taint. */
+    CallRecordData *cur = current_record();
+    if (!cur) return;
+    uint64_t call_id = cur->call_id;
 
     off_t pos = lseek(fd, 0, SEEK_CUR);
     uint64_t offset = (pos >= 0) ? (uint64_t)(pos - n) : 0;
@@ -1368,7 +1347,50 @@ void d3g_fileio_write_hook(PyObject *fileio_obj, int fd, Py_ssize_t n) {
 void d3g_after_fork_child_hook(void) {
     if (!g_state.enabled) return;
     if (!g_state.db) return;
-    db_clear_records((DatabaseObject *)g_state.db);
+    DatabaseObject *db = (DatabaseObject *)g_state.db;
+
+    /* The child discards the parent's call history, but the calls that were
+     * active at fork time are still active here and their FrameEntry.record
+     * pointers would dangle once db_clear_records frees the records. Only
+     * the forking thread survives in the child, so its thread-local frame
+     * stacks are the complete set. Snapshot each active record's header,
+     * clear, then re-create the records in order and repoint the entries,
+     * so the child's trace is self-contained and every live entry is
+     * backed by valid storage. */
+    typedef struct { FrameEntry *entry; CallRecordData header; } ActiveCall;
+    ActiveCall *active = NULL;
+    size_t n_active = 0, cap_active = 0;
+    if (tl_stacks_init) {
+        for (size_t i = 0; i < tl_coro_stacks.capacity; i++) {
+            UMapEntry *me = &tl_coro_stacks.entries[i];
+            if (!me->occupied) continue;
+            FrameStack *stack = (FrameStack *)me->value;
+            for (size_t j = 0; j < stack->count; j++) {
+                FrameEntry *fe = &stack->entries[j];
+                if (!fe->record) continue;
+                if (n_active == cap_active) {
+                    cap_active = cap_active ? cap_active * 2 : 16;
+                    ActiveCall *tmp = realloc(active, cap_active * sizeof(ActiveCall));
+                    if (!tmp) { free(active); active = NULL; n_active = 0; goto clear; }
+                    active = tmp;
+                }
+                active[n_active].entry = fe;
+                active[n_active].header = *fe->record;
+                n_active++;
+            }
+        }
+    }
+
+clear:
+    db_clear_records(db);
+
+    for (size_t i = 0; i < n_active; i++) {
+        CallRecordData *h = &active[i].header;
+        active[i].entry->record = db_add_call(db, h->call_id, h->function_id,
+                                              h->caller_id, h->call_lineno,
+                                              h->obj_id);
+    }
+    free(active);
 }
 
 /* ---- generator-driven for loops (FOR_ITER_GEN) ---- */
@@ -1515,6 +1537,11 @@ static PyObject *py_set_call_id(PyObject *self, PyObject *args) {
 CallRecordData *current_record(void) {
     PyFrameObject *frame = PyEval_GetFrame();
     if (!frame) return NULL;
+    /* Inside a taint-excluded subtree nothing is attributed, not even to
+     * the nearest traced caller. Untraced library frames (call_id 0) do
+     * attribute to it: that is how dataflow through library code is
+     * credited to the traced call that invoked it. */
+    if (get_frame_call_id(frame) == UINT64_MAX) return NULL;
     FrameEntry *entry = frame_stack_peek(frame);
     if (!entry) return NULL;
     return entry->record;
@@ -1530,8 +1557,6 @@ static PyMethodDef hook_methods[] = {
 };
 
 int hook_init(PyObject *module) {
-    ExtraCleanupType = (PyTypeObject *)PyType_FromSpec(&ExtraCleanup_spec);
-    if (!ExtraCleanupType) return -1;
 
     for (PyMethodDef *m = hook_methods; m->ml_name; m++) {
         PyObject *func = PyCFunction_NewEx(m, NULL, NULL);
