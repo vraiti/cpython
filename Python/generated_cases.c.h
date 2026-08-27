@@ -1640,10 +1640,12 @@
                 stack_pointer[-2 - oparg] = callable;
                 stack_pointer[-1 - oparg] = self_or_null;
                 _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
                 PyObject *res_o = PyObject_Vectorcall(
                     callable_o, args_o,
                     total_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     NULL);
+                d3g_c_return_hook(frame);
                 stack_pointer = _PyFrame_GetStackPointer(frame);
                 STACKREFS_TO_PYOBJECTS_CLEANUP(args_o);
                 if (opcode == INSTRUMENTED_CALL) {
@@ -3260,7 +3262,7 @@
                 PyObject *kwnames_o = PyStackRef_AsPyObjectBorrow(kwnames);
                 int positional_args = total_args - (int)PyTuple_GET_SIZE(kwnames_o);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
-                d3g_c_call_hook(callable_o, NULL);
+                d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
                 PyObject *res_o = PyObject_Vectorcall(
                     callable_o, args_o,
                     positional_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -4132,7 +4134,7 @@
                     JUMP_TO_LABEL(error);
                 }
                 _PyFrame_SetStackPointer(frame, stack_pointer);
-                d3g_c_call_hook(callable_o, NULL);
+                d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
                 PyObject *res_o = PyObject_Vectorcall(
                     callable_o, args_o,
                     total_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -6586,10 +6588,12 @@
                     JUMP_TO_LABEL(error);
                 }
                 _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
                 PyObject *res_o = PyObject_Vectorcall(
                     callable_o, args_o,
                     total_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
                     NULL);
+                d3g_c_return_hook(frame);
                 stack_pointer = _PyFrame_GetStackPointer(frame);
                 STACKREFS_TO_PYOBJECTS_CLEANUP(args_o);
                 if (opcode == INSTRUMENTED_CALL) {
@@ -9382,6 +9386,9 @@
                     stack_pointer = _PyFrame_GetStackPointer(frame);
                     JUMP_TO_LABEL(error);
                 }
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                d3g_deref_load_hook((PyObject *)cell, name, value_o);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
             }
             stack_pointer += -1;
             assert(WITHIN_STACK_BOUNDS());
@@ -10512,6 +10519,9 @@
             _PyStackRef prev_exc;
             _PyStackRef new_exc;
             exc = stack_pointer[-1];
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            d3g_exc_handler_hook(frame, INSTR_OFFSET() - 1);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
             _PyErr_StackItem *exc_info = tstate->exc_info;
             if (exc_info->exc_value != NULL) {
                 prev_exc = PyStackRef_FromPyObjectSteal(exc_info->exc_value);
@@ -10771,6 +10781,7 @@
             assert(frame->frame_obj == NULL);
             gen->gi_frame_state = FRAME_CREATED;
             gen_frame->owner = FRAME_OWNED_BY_GENERATOR;
+            d3g_gen_create_hook((PyObject *)gen, frame->previous);
             _Py_LeaveRecursiveCallPy(tstate);
             _PyInterpreterFrame *prev = frame->previous;
             _PyThreadState_PopFrame(tstate, frame);
@@ -12697,6 +12708,7 @@ JUMP_TO_LABEL(error);
         LABEL(exit_unwind)
         {
             assert(_PyErr_Occurred(tstate));
+            d3g_py_return_hook(frame);
             _Py_LeaveRecursiveCallPy(tstate);
             assert(frame->owner != FRAME_OWNED_BY_INTERPRETER);
             _PyInterpreterFrame *dying = frame;

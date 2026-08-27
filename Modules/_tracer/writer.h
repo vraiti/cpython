@@ -29,6 +29,7 @@ typedef enum {
     EV_IPC,
     EV_IO_OBJECT,
     EV_IO_OP,
+    EV_CALL_ARG,
     EV_STOP,
 } EventKind;
 
@@ -37,11 +38,12 @@ typedef struct {
     union {
         CallRecordData *call;                      /* owned */
         struct { uint64_t id; uint64_t call_id; SMap members; } object;
-        struct { int32_t id; char *ref; } function;               /* ref owned */
+        struct { int32_t id; char *ref; uint8_t *cfg; size_t cfg_len; } function; /* ref, cfg owned */
         struct { char *name; int64_t call_id; } ipc;              /* name owned */
         struct { uint32_t id; char *name; uint64_t offset; } io_object; /* name owned */
         struct { uint32_t io_object_id; uint64_t call_id, offset, length;
                  int op_type; } io_op;
+        struct { uint64_t call_id; char *name; int32_t obj_idx; } call_arg; /* name owned */
     } u;
 } TraceEvent;
 
@@ -68,10 +70,11 @@ int writer_running(void);
 /* Convenience constructors; each pushes immediately. */
 void writer_push_call(CallRecordData *rec);
 void writer_push_object(uint64_t id, uint64_t call_id, SMap *members);
-void writer_push_function(int32_t id, const char *ref);
+void writer_push_function(int32_t id, const char *ref, const uint8_t *cfg, size_t cfg_len);
 void writer_push_ipc(const char *name, int64_t call_id);
 void writer_push_io_object(uint32_t id, const char *name, uint64_t offset);
 void writer_push_io_op(uint32_t io_object_id, uint64_t call_id,
                        uint64_t offset, uint64_t length, int op_type);
+void writer_push_call_arg(uint64_t call_id, const char *name, int32_t obj_idx);
 
 #endif

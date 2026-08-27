@@ -70,6 +70,10 @@ struct _PyInterpreterFrame {
     char prefix##_hooks_inited;                                             \
     char prefix##_closed;                                                   \
     char prefix##_running_async;                                            \
+    /* D3G: call that created this generator/coroutine, and the line of   */\
+    /* the creating call expression; 0 when created outside tracing.     */\
+    uint64_t prefix##_d3g_created_id;                                       \
+    int32_t prefix##_d3g_created_lineno;                                    \
     /* The frame */                                                         \
     int8_t prefix##_frame_state;                                            \
     _PyInterpreterFrame prefix##_iframe;                                    \

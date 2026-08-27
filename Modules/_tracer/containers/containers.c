@@ -20,9 +20,9 @@ void emit_read(const ARW *arw) {
     if (!frame) return;
     CallRecordData *rec = current_record();
     if (!rec) return;
-    uint64_t caller_id = get_frame_call_id(frame);
+    /* attr_reads.caller_id is the call that wrote the value being read. */
     int lineno = PyFrame_GetLineNumber(frame);
-    db_add_attr_read(rec, caller_id, arw->call_lineno, lineno);
+    db_add_attr_read(rec, arw->caller_id, arw->call_lineno, lineno);
 }
 
 int containers_init(PyObject *module) {

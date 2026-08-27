@@ -47,7 +47,7 @@ static size_t pending_len = 0, pending_cap = 0;
 
 static struct {
     sqlite3_stmt *call, *attr_read, *object, *member, *function, *ipc,
-                 *io_object, *io_op;
+                 *io_object, *io_op, *call_arg;
 } st;
 
 static struct {
@@ -70,12 +70,16 @@ static void free_event(TraceEvent *ev) {
         break;
     case EV_FUNCTION:
         free(ev->u.function.ref);
+        free(ev->u.function.cfg);
         break;
     case EV_IPC:
         free(ev->u.ipc.name);
         break;
     case EV_IO_OBJECT:
         free(ev->u.io_object.name);
+        break;
+    case EV_CALL_ARG:
+        free(ev->u.call_arg.name);
         break;
     default:
         break;
@@ -96,7 +100,7 @@ static const char *SCHEMA_SQL =
     "PRAGMA synchronous=OFF;"
     "CREATE TABLE meta (pid INTEGER);"
     "CREATE TABLE machine (machine_id TEXT NOT NULL);"
-    "CREATE TABLE functions (function_id INTEGER PRIMARY KEY, ref TEXT NOT NULL);"
+    "CREATE TABLE functions (function_id INTEGER PRIMARY KEY, ref TEXT NOT NULL, cfg BLOB);"
     "CREATE TABLE calls ("
     "    pid INTEGER NOT NULL,"
     "    call_id INTEGER NOT NULL,"
@@ -105,7 +109,16 @@ static const char *SCHEMA_SQL =
     "    call_lineno INTEGER NOT NULL,"
     "    obj_id INTEGER NOT NULL,"
     "    control_flow BLOB,"
+    "    func_idx INTEGER NOT NULL DEFAULT 0,"
+    "    created_id INTEGER NOT NULL DEFAULT 0,"
+    "    created_lineno INTEGER NOT NULL DEFAULT 0,"
     "    PRIMARY KEY (pid, call_id)"
+    ");"
+    "CREATE TABLE call_args ("
+    "    pid INTEGER NOT NULL,"
+    "    call_id INTEGER NOT NULL,"
+    "    name TEXT NOT NULL,"
+    "    obj_idx INTEGER NOT NULL"
     ");"
     "CREATE TABLE attr_reads ("
     "    pid INTEGER NOT NULL,"
@@ -196,11 +209,12 @@ static int open_db(void) {
         sqlite3_finalize(s);
     }
 
-    if (prep(&st.call, "INSERT INTO calls VALUES (?,?,?,?,?,?,?)") < 0 ||
+    if (prep(&st.call, "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?,?,?)") < 0 ||
+        prep(&st.call_arg, "INSERT INTO call_args VALUES (?,?,?,?)") < 0 ||
         prep(&st.attr_read, "INSERT INTO attr_reads VALUES (?,?,?,?,?)") < 0 ||
         prep(&st.object, "INSERT INTO objects VALUES (?,?,?)") < 0 ||
         prep(&st.member, "INSERT INTO members VALUES (?,?,?,?)") < 0 ||
-        prep(&st.function, "INSERT OR REPLACE INTO functions VALUES (?,?)") < 0 ||
+        prep(&st.function, "INSERT OR REPLACE INTO functions VALUES (?,?,?)") < 0 ||
         prep(&st.ipc, "INSERT INTO ipc VALUES (?,?,?)") < 0 ||
         prep(&st.io_object, "INSERT INTO io_objects VALUES (?,?,?,?)") < 0 ||
         prep(&st.io_op, "INSERT INTO io_ops VALUES (?,?,?,?,?,?)") < 0)
@@ -227,6 +241,7 @@ static void close_db(void) {
     sqlite3_finalize(st.ipc);
     sqlite3_finalize(st.io_object);
     sqlite3_finalize(st.io_op);
+    sqlite3_finalize(st.call_arg);
     memset(&st, 0, sizeof(st));
     sqlite3_close(sdb);
     sdb = NULL;
@@ -249,6 +264,9 @@ static void write_event(const TraceEvent *ev) {
                               (int)rec->control_flow_len, SQLITE_STATIC);
         else
             sqlite3_bind_null(st.call, 7);
+        sqlite3_bind_int(st.call, 8, rec->func_idx);
+        sqlite3_bind_int64(st.call, 9, (sqlite3_int64)rec->created_id);
+        sqlite3_bind_int(st.call, 10, rec->created_lineno);
         sqlite3_step(st.call);
         sqlite3_reset(st.call);
 
@@ -291,6 +309,11 @@ static void write_event(const TraceEvent *ev) {
     case EV_FUNCTION:
         sqlite3_bind_int(st.function, 1, ev->u.function.id);
         sqlite3_bind_text(st.function, 2, ev->u.function.ref, -1, SQLITE_STATIC);
+        if (ev->u.function.cfg_len)
+            sqlite3_bind_blob(st.function, 3, ev->u.function.cfg,
+                              (int)ev->u.function.cfg_len, SQLITE_STATIC);
+        else
+            sqlite3_bind_null(st.function, 3);
         sqlite3_step(st.function);
         sqlite3_reset(st.function);
         break;
@@ -320,6 +343,14 @@ static void write_event(const TraceEvent *ev) {
         sqlite3_bind_int(st.io_op, 6, ev->u.io_op.op_type);
         sqlite3_step(st.io_op);
         sqlite3_reset(st.io_op);
+        break;
+    case EV_CALL_ARG:
+        sqlite3_bind_int(st.call_arg, 1, db_pid);
+        sqlite3_bind_int64(st.call_arg, 2, (sqlite3_int64)ev->u.call_arg.call_id);
+        sqlite3_bind_text(st.call_arg, 3, ev->u.call_arg.name, -1, SQLITE_STATIC);
+        sqlite3_bind_int(st.call_arg, 4, ev->u.call_arg.obj_idx);
+        sqlite3_step(st.call_arg);
+        sqlite3_reset(st.call_arg);
         break;
     default:
         break;
@@ -558,10 +589,19 @@ void writer_push_object(uint64_t id, uint64_t call_id, SMap *members) {
     writer_push(&ev);
 }
 
-void writer_push_function(int32_t id, const char *ref) {
+void writer_push_function(int32_t id, const char *ref, const uint8_t *cfg, size_t cfg_len) {
     TraceEvent ev = { .kind = EV_FUNCTION };
     ev.u.function.id = id;
     ev.u.function.ref = strdup(ref);
+    ev.u.function.cfg = NULL;
+    ev.u.function.cfg_len = 0;
+    if (cfg && cfg_len) {
+        ev.u.function.cfg = malloc(cfg_len);
+        if (ev.u.function.cfg) {
+            memcpy(ev.u.function.cfg, cfg, cfg_len);
+            ev.u.function.cfg_len = cfg_len;
+        }
+    }
     writer_push(&ev);
 }
 
@@ -577,6 +617,14 @@ void writer_push_io_object(uint32_t id, const char *name, uint64_t offset) {
     ev.u.io_object.id = id;
     ev.u.io_object.name = strdup(name);
     ev.u.io_object.offset = offset;
+    writer_push(&ev);
+}
+
+void writer_push_call_arg(uint64_t call_id, const char *name, int32_t obj_idx) {
+    TraceEvent ev = { .kind = EV_CALL_ARG };
+    ev.u.call_arg.call_id = call_id;
+    ev.u.call_arg.name = strdup(name);
+    ev.u.call_arg.obj_idx = obj_idx;
     writer_push(&ev);
 }
 

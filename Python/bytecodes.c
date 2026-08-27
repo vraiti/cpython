@@ -1945,6 +1945,7 @@ dummy_func(
                     _PyEval_FormatExcUnbound(tstate, _PyFrame_GetCode(frame), oparg);
                     ERROR_NO_POP();
                 }
+                d3g_deref_load_hook((PyObject *)cell, name, value_o);
             }
             PyStackRef_CLOSE(class_dict_st);
             value = PyStackRef_FromPyObjectSteal(value_o);
@@ -3646,6 +3647,8 @@ dummy_func(
         };
 
         inst(PUSH_EXC_INFO, (exc -- prev_exc, new_exc)) {
+            /* D3G: every except/with/finally handler starts here. */
+            d3g_exc_handler_hook(frame, INSTR_OFFSET() - 1);
 
             _PyErr_StackItem *exc_info = tstate->exc_info;
             if (exc_info->exc_value != NULL) {
@@ -3863,10 +3866,13 @@ dummy_func(
                 DECREF_INPUTS();
                 ERROR_IF(true);
             }
+            /* D3G: the unspecialized path; self is the bound receiver. */
+            d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
             PyObject *res_o = PyObject_Vectorcall(
                 callable_o, args_o,
                 total_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
                 NULL);
+            d3g_c_return_hook(frame);
             STACKREFS_TO_PYOBJECTS_CLEANUP(args_o);
             if (opcode == INSTRUMENTED_CALL) {
                 PyObject *arg = total_args == 0 ?
@@ -4018,7 +4024,8 @@ dummy_func(
                 DECREF_INPUTS();
                 ERROR_IF(true);
             }
-            d3g_c_call_hook(callable_o, NULL);
+            /* D3G: self is the bound receiver for method descriptors. */
+            d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
             PyObject *res_o = PyObject_Vectorcall(
                 callable_o, args_o,
                 total_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -4928,7 +4935,8 @@ dummy_func(
             }
             PyObject *kwnames_o = PyStackRef_AsPyObjectBorrow(kwnames);
             int positional_args = total_args - (int)PyTuple_GET_SIZE(kwnames_o);
-            d3g_c_call_hook(callable_o, NULL);
+            /* D3G: self is the bound receiver for method descriptors. */
+            d3g_c_call_hook(callable_o, PyStackRef_IsNull(self_or_null) ? NULL : PyStackRef_AsPyObjectBorrow(self_or_null));
             PyObject *res_o = PyObject_Vectorcall(
                 callable_o, args_o,
                 positional_args | PY_VECTORCALL_ARGUMENTS_OFFSET,
@@ -5104,6 +5112,7 @@ dummy_func(
             assert(frame->frame_obj == NULL);
             gen->gi_frame_state = FRAME_CREATED;
             gen_frame->owner = FRAME_OWNED_BY_GENERATOR;
+            d3g_gen_create_hook((PyObject *)gen, frame->previous);
             _Py_LeaveRecursiveCallPy(tstate);
             _PyInterpreterFrame *prev = frame->previous;
             _PyThreadState_PopFrame(tstate, frame);
@@ -5591,6 +5600,9 @@ dummy_func(
 
         spilled label(exit_unwind) {
             assert(_PyErr_Occurred(tstate));
+            /* D3G: the frame is leaving by exception; complete its record
+             * so the caller's entry is on top of the frame stack again. */
+            d3g_py_return_hook(frame);
             _Py_LeaveRecursiveCallPy(tstate);
             assert(frame->owner != FRAME_OWNED_BY_INTERPRETER);
             // GH-99729: We need to unlink the frame *before* clearing it:

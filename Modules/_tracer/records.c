@@ -17,6 +17,9 @@ CallRecordData *db_add_call(DatabaseObject *db,
     rec->caller_id = caller_id;
     rec->call_lineno = call_lineno;
     rec->obj_id = obj_id;
+    rec->func_idx = 0;
+    rec->created_id = 0;
+    rec->created_lineno = 0;
     rec->control_flow = NULL;
     rec->control_flow_len = 0;
     rec->attr_reads = NULL;

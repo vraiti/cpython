@@ -19,6 +19,11 @@ TRACER_API void d3g_global_delete_hook(PyObject *globals, PyObject *name);
 TRACER_API void d3g_deref_store_hook(PyObject *cell, PyObject *name, PyObject *value);
 TRACER_API void d3g_deref_load_hook(PyObject *cell, PyObject *name, PyObject *value);
 TRACER_API void d3g_branch_hook(struct _PyInterpreterFrame *frame, int taken);
+/* Exception handler entered (PUSH_EXC_INFO) at code-unit `offset`. */
+TRACER_API void d3g_exc_handler_hook(struct _PyInterpreterFrame *frame, int offset);
+/* Generator/coroutine created (RETURN_GENERATOR); creator is the frame
+ * below the prologue frame. */
+TRACER_API void d3g_gen_create_hook(PyObject *gen, struct _PyInterpreterFrame *creator);
 TRACER_API void d3g_py_call_hook(struct _PyInterpreterFrame *frame);
 TRACER_API void d3g_py_return_hook(struct _PyInterpreterFrame *frame);
 TRACER_API void d3g_c_call_hook(PyObject *callable, PyObject *self_obj);

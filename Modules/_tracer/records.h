@@ -24,6 +24,9 @@ typedef struct CallRecordData {
     uint64_t caller_id;
     int32_t call_lineno;
     int32_t obj_id;
+    int32_t func_idx;      /* trace id of the function object executed, 0 if untracked */
+    uint64_t created_id;   /* generator/coroutine bodies: the creating call */
+    int32_t created_lineno; /* line of the creating call expression */
     uint8_t *control_flow;
     Py_ssize_t control_flow_len;
     AttrRecordReadData *attr_reads;

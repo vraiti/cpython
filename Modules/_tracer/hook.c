@@ -2,6 +2,7 @@
 #include "tracer_hooks.h"
 #include "containers/containers.h"
 #include "writer.h"
+#include "cfg.h"
 #include "pycore_frame.h"
 #include "pycore_interpframe.h"
 #include "pycore_interpframe_structs.h"
@@ -156,14 +157,37 @@ static int check_scope(uintptr_t filename_ptr, const char *filename) {
 
 /* ---- get_or_assign_function_id ---- */
 
-static int32_t get_or_assign_function_id(const char *ref_str) {
+/* One entry per function ref for the life of the process: the id and the
+ * bytecode CFG, built once from the code object on first call and reused
+ * for every later call and for the replay after fork. */
+typedef struct {
+    int32_t id;
+    uint8_t *cfg;
+    size_t cfg_len;
+} FuncEntry;
+
+static int32_t get_or_assign_function_id(const char *ref_str, PyCodeObject *code) {
     void *val;
     if (SMap_get(&g_state.func_to_id, ref_str, &val))
-        return (int32_t)(intptr_t)val;
-    int32_t id = g_state.next_func_id++;
-    SMap_set(&g_state.func_to_id, ref_str, (void *)(intptr_t)id);
-    writer_push_function(id, ref_str);
-    return id;
+        return ((FuncEntry *)val)->id;
+    FuncEntry *fe = malloc(sizeof(FuncEntry));
+    if (!fe) return 0;
+    fe->id = g_state.next_func_id++;
+    fe->cfg = code ? d3g_build_cfg(code, &fe->cfg_len) : NULL;
+    if (!fe->cfg) fe->cfg_len = 0;
+    SMap_set(&g_state.func_to_id, ref_str, fe);
+    writer_push_function(fe->id, ref_str, fe->cfg, fe->cfg_len);
+    return fe->id;
+}
+
+static void free_func_entries(void) {
+    SMap *fm = &g_state.func_to_id;
+    if (!fm->entries) return;
+    for (size_t i = 0; i < fm->capacity; i++) {
+        if (!fm->entries[i].occupied) continue;
+        FuncEntry *fe = fm->entries[i].value;
+        if (fe) { free(fe->cfg); free(fe); }
+    }
 }
 
 /* ---- get_self_obj_id ---- */
@@ -400,7 +424,7 @@ PyObject *d3g_getattr_hook(PyObject *obj, PyObject *name, PyObject *result) {
     if (rec) {
         uint64_t caller_id = get_frame_call_id(frame);
         int read_lineno = PyFrame_GetLineNumber(frame);
-        db_add_attr_read(rec, caller_id, arw.call_lineno, read_lineno);
+        db_add_attr_read(rec, arw.caller_id, arw.call_lineno, read_lineno);
     }
 
     return result;
@@ -478,7 +502,7 @@ void d3g_global_load_hook(PyObject *globals, PyObject *name, PyObject *value) {
     if (rec) {
         uint64_t caller_id = get_frame_call_id(frame);
         int read_lineno = PyFrame_GetLineNumber(frame);
-        db_add_attr_read(rec, caller_id, arw.call_lineno, read_lineno);
+        db_add_attr_read(rec, arw.caller_id, arw.call_lineno, read_lineno);
     }
 }
 
@@ -514,8 +538,28 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
         if (!entry->branch_buf) return;
     }
     /* 0/1: conditional jump not taken/taken (FOR_ITER: next/exhausted);
-     * 2: `async for` exhausted (END_ASYNC_FOR). */
+     * 2: `async for` exhausted (END_ASYNC_FOR); 3 + u32: handler entered. */
     entry->branch_buf[entry->branch_len++] = (unsigned char)taken;
+}
+
+void d3g_exc_handler_hook(_PyInterpreterFrame *frame, int offset) {
+    if (!g_state.enabled) return;
+    if (frame->call_id == 0 || frame->call_id == UINT64_MAX) return;
+    PyFrameObject *frame_obj = frame->frame_obj;
+    if (!frame_obj) return;
+    FrameEntry *entry = frame_stack_peek(frame_obj);
+    if (!entry) return;
+    if (entry->branch_len + 5 > entry->branch_cap) {
+        size_t cap = entry->branch_cap ? entry->branch_cap * 2 : 32;
+        while (cap < entry->branch_len + 5) cap *= 2;
+        entry->branch_cap = cap;
+        entry->branch_buf = realloc(entry->branch_buf, entry->branch_cap);
+    }
+    unsigned char *p = entry->branch_buf + entry->branch_len;
+    p[0] = 3;
+    p[1] = (unsigned char)offset; p[2] = (unsigned char)(offset >> 8);
+    p[3] = (unsigned char)(offset >> 16); p[4] = (unsigned char)(offset >> 24);
+    entry->branch_len += 5;
 }
 
 /* ---- item hooks (subscript operations) ---- */
@@ -567,7 +611,7 @@ PyObject *d3g_getitem_hook(PyObject *o, PyObject *key, PyObject *result) {
     if (rec) {
         uint64_t caller_id = get_frame_call_id(frame);
         int read_lineno = PyFrame_GetLineNumber(frame);
-        db_add_attr_read(rec, caller_id, arw.call_lineno, read_lineno);
+        db_add_attr_read(rec, arw.caller_id, arw.call_lineno, read_lineno);
     }
 
     return result;
@@ -664,9 +708,90 @@ void d3g_deref_load_hook(PyObject *cell, PyObject *name, PyObject *value) {
 
     CallRecordData *rec = current_record();
     if (rec) {
-        uint64_t caller_id = get_frame_call_id(frame);
         int read_lineno = PyFrame_GetLineNumber(frame);
-        db_add_attr_read(rec, caller_id, arw.call_lineno, read_lineno);
+        if (rec->attr_reads_len > 0) {
+            AttrRecordReadData *last = &rec->attr_reads[rec->attr_reads_len - 1];
+            if (last->caller_id == arw.caller_id &&
+                last->write_call_lineno == arw.call_lineno &&
+                last->read_call_lineno == read_lineno)
+                return;
+        }
+        db_add_attr_read(rec, arw.caller_id, arw.call_lineno, read_lineno);
+    }
+}
+
+/* Captured parameters reach their cell via MAKE_CELL in the frame prologue,
+ * before RESUME assigns the frame's call id, so STORE_DEREF never sees them.
+ * Once the call is registered, record any cell that already holds a value as
+ * a write by this call. */
+static void record_initial_cells(_PyInterpreterFrame *frame, PyFrameObject *frame_obj) {
+    PyCodeObject *co = _PyFrame_GetCode(frame);
+    if (co->co_ncellvars == 0) return;
+    uint64_t call_id = get_frame_call_id(frame_obj);
+    if (call_id == UINT64_MAX) return;
+    for (int i = 0; i < co->co_nlocalsplus; i++) {
+        if (!(_PyLocals_GetKind(co->co_localspluskinds, i) & CO_FAST_CELL))
+            continue;
+        PyObject *cell = PyStackRef_AsPyObjectBorrow(frame->localsplus[i]);
+        if (!cell || !PyCell_Check(cell)) continue;
+        PyObject *value = PyCell_GET(cell);
+        if (!value) continue;
+        d3g_deref_store_hook(cell, PyTuple_GET_ITEM(co->co_localsplusnames, i), value);
+    }
+}
+
+/* ---- callable identity ----
+ *
+ * Indirect calls (`fn()` where `fn` arrived as a value) cannot be paired
+ * with their traced child by name.  Record identity instead: every call
+ * notes the trace id of the function object it executed (calls.func_idx),
+ * and every callable parameter value is recorded by name (call_args), so
+ * the resolver can match a variable callee to the child that executed
+ * exactly that function object. */
+static int32_t function_trace_id(PyObject *callable) {
+    if (!callable) return 0;
+    if (PyMethod_Check(callable))
+        callable = PyMethod_GET_FUNCTION(callable);
+    if (!PyFunction_Check(callable)) return 0;
+    ObjectTraceData *td = get_trace_data(callable);
+    if (!td) td = new_trace_data(callable);
+    return td ? (int32_t)td->id : 0;
+}
+
+/* Generator/coroutine creation (RETURN_GENERATOR): stamp the creating call
+ * and the creation line on the object.  The body runs later, under whatever
+ * frame first resumes it; the stamp lets the resolver bind its parameters
+ * from the creator's call expression. */
+void d3g_gen_create_hook(PyObject *gen, _PyInterpreterFrame *creator) {
+    if (!g_state.enabled) return;
+    CallRecordData *rec = current_record();
+    if (!rec) return;
+    PyGenObject *g = (PyGenObject *)gen;
+    g->gi_d3g_created_id = rec->call_id;
+    g->gi_d3g_created_lineno =
+        (creator && creator->owner != FRAME_OWNED_BY_CSTACK)
+            ? PyUnstable_InterpreterFrame_GetLine(creator)
+            : 0;
+}
+
+static void record_call_identity(CallRecordData *rec, _PyInterpreterFrame *iframe,
+                                 PyCodeObject *code) {
+    rec->func_idx = function_trace_id(PyStackRef_AsPyObjectBorrow(iframe->f_funcobj));
+    if (iframe->owner == FRAME_OWNED_BY_GENERATOR) {
+        PyGenObject *g = _PyGen_GetGeneratorFromFrame(iframe);
+        rec->created_id = g->gi_d3g_created_id;
+        rec->created_lineno = g->gi_d3g_created_lineno;
+    }
+    int nargs = code->co_argcount + code->co_kwonlyargcount;
+    for (int i = 0; i < nargs; i++) {
+        PyObject *v = PyStackRef_AsPyObjectBorrow(iframe->localsplus[i]);
+        if (!v || !(PyFunction_Check(v) || PyMethod_Check(v))) continue;
+        int32_t idx = function_trace_id(v);
+        if (idx == 0) continue;
+        const char *name = PyUnicode_AsUTF8(
+            PyTuple_GET_ITEM(code->co_localsplusnames, i));
+        if (name)
+            writer_push_call_arg(rec->call_id, name, idx);
     }
 }
 
@@ -756,7 +881,7 @@ static int handle_call(PyObject *py_frame, PyFrameObject *frame_obj) {
                 if (qn) {
                     char ref_buf[1024];
                     snprintf(ref_buf, sizeof(ref_buf), "%s:%s", filename, qn);
-                    int32_t function_id = get_or_assign_function_id(ref_buf);
+                    int32_t function_id = get_or_assign_function_id(ref_buf, code);
 
                     set_frame_call_id((PyFrameObject *)py_frame, call_id);
         
@@ -766,6 +891,7 @@ static int handle_call(PyObject *py_frame, PyFrameObject *frame_obj) {
                                                       caller_id, call_lineno, 0);
                     if (rec) {
                         rec->obj_id = get_obj_id(self_obj);
+                        record_call_identity(rec, frame_obj->f_frame, code);
                         push_traced_frame(frame_obj, call_id, rec, ref_buf);
                     }
                 }
@@ -799,7 +925,7 @@ static int handle_call(PyObject *py_frame, PyFrameObject *frame_obj) {
 
     char ref_buf[1024];
     snprintf(ref_buf, sizeof(ref_buf), "%s:%s", filename, qualname);
-    int32_t function_id = get_or_assign_function_id(ref_buf);
+    int32_t function_id = get_or_assign_function_id(ref_buf, code);
 
     PyObject *self_obj = get_self_obj(py_frame, code);
     int32_t obj_id = get_obj_id(self_obj);
@@ -808,6 +934,7 @@ static int handle_call(PyObject *py_frame, PyFrameObject *frame_obj) {
     CallRecordData *rec = db_add_call(db, call_id, function_id,
                                        caller_id, call_lineno, obj_id);
     if (!rec) { Py_DECREF(code); return 0; }
+    record_call_identity(rec, frame_obj->f_frame, code);
 
     push_traced_frame(frame_obj, call_id, rec, ref_buf);
 
@@ -1084,6 +1211,7 @@ void d3g_py_call_hook(_PyInterpreterFrame *frame) {
     PyFrameObject *frame_obj = _PyFrame_GetFrameObject(frame);
     if (!frame_obj) return;
     handle_call((PyObject *)frame_obj, frame_obj);
+    record_initial_cells(frame, frame_obj);
 }
 
 void d3g_py_return_hook(_PyInterpreterFrame *frame) {
@@ -1399,8 +1527,8 @@ clear:
         if (fm->entries) {
             for (size_t i = 0; i < fm->capacity; i++) {
                 if (!fm->entries[i].occupied) continue;
-                writer_push_function((int32_t)(intptr_t)fm->entries[i].value,
-                                     fm->entries[i].key);
+                FuncEntry *fe = fm->entries[i].value;
+                writer_push_function(fe->id, fm->entries[i].key, fe->cfg, fe->cfg_len);
             }
         }
     }
@@ -1521,6 +1649,7 @@ static PyObject *py_install(PyObject *self, PyObject *args, PyObject *kw) {
     umap_init(&g_state.scope_cache, 256);
     umap_init(&g_state.object_extras, 1024);
     umap_init(&g_state.io_object_records, 16);
+    free_func_entries();
     SMap_free(&g_state.func_to_id);
     SMap_init(&g_state.func_to_id, 512);
     g_state.next_func_id = 0;

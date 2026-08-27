@@ -922,6 +922,8 @@ make_gen(PyTypeObject *type, PyFunctionObject *func)
         return NULL;
     }
     gen->gi_frame_state = FRAME_CLEARED;
+    gen->gi_d3g_created_id = 0;
+    gen->gi_d3g_created_lineno = 0;
     gen->gi_weakreflist = NULL;
     gen->gi_exc_state.exc_value = NULL;
     gen->gi_exc_state.previous_item = NULL;
