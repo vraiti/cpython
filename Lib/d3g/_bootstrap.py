@@ -8,9 +8,9 @@ db = None
 
 def init() -> None:
     global db
-    import yaml
+    import json
     with open(os.environ["PYTHON_TRACER_CONFIG"]) as f:
-        cfg = yaml.safe_load(f) or {}
+        cfg = json.load(f) or {}
 
     os.makedirs(os.environ["PYTHON_TRACER_OUTDIR"], exist_ok=True)
 

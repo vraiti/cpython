@@ -1,6 +1,6 @@
 """Run a script under the tracer.
 
-    PYTHON_TRACER_CONFIG=config.yaml PYTHON_TRACER_OUTDIR=dir \
+    PYTHON_TRACER_CONFIG=config.json PYTHON_TRACER_OUTDIR=dir \
         python -m d3g -- script.py [args...]
 
 Every traced process, this one included, streams its records into its own
@@ -24,7 +24,7 @@ def main() -> None:
         sys.argv = sys.argv[1:]
 
     if not sys.argv:
-        print("Usage: PYTHON_TRACER_CONFIG=config.yaml python -m d3g -- script.py [args...]", file=sys.stderr)
+        print("Usage: PYTHON_TRACER_CONFIG=config.json python -m d3g -- script.py [args...]", file=sys.stderr)
         sys.exit(1)
 
     from _tracer import uninstall
