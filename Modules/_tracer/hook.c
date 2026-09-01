@@ -7,6 +7,7 @@
 #include "pycore_interpframe.h"
 #include "pycore_interpframe_structs.h"
 #include "pycore_genobject.h"
+#include "pycore_pystate.h"       /* _PyThreadState_GET */
 #include "pycore_stackref.h"
 #include "pycore_code.h"          /* _Py_GetBaseCodeUnit */
 #include "opcode_ids.h"           /* FOR_ITER */
@@ -25,14 +26,51 @@ TraceState g_state = {0};
 
 /* ---- object extras helpers ---- */
 
-/* ---- frame call_id helpers ---- */
+/* ---- frame call_id helpers ----
+ *
+ * call_id is not a field of _PyInterpreterFrame (see pycore_d3g_frame.h
+ * for why, and where it lives instead). Thread-owned frames are looked up
+ * in the current thread's parallel stack, generator-owned frames in the
+ * extra slots of their generator; any other owner has no storage. */
+
+static uint64_t iframe_get_call_id(_PyInterpreterFrame *f) {
+    switch (f->owner) {
+    case FRAME_OWNED_BY_GENERATOR:
+        return _PyD3G_GenExtras(_PyGen_GetGeneratorFromFrame(f))->call_id;
+    case FRAME_OWNED_BY_THREAD: {
+        PyThreadState *tstate = _PyThreadState_GET();
+        if (!tstate) return 0;
+        _PyD3GFrameSlot *slot = _PyD3G_FrameStackFind(_PyD3G_FrameStackOf(tstate), f);
+        return slot ? slot->call_id : 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static void iframe_set_call_id(_PyInterpreterFrame *f, uint64_t cid) {
+    switch (f->owner) {
+    case FRAME_OWNED_BY_GENERATOR:
+        _PyD3G_GenExtras(_PyGen_GetGeneratorFromFrame(f))->call_id = cid;
+        break;
+    case FRAME_OWNED_BY_THREAD: {
+        PyThreadState *tstate = _PyThreadState_GET();
+        if (!tstate) return;
+        _PyD3GFrameSlot *slot = _PyD3G_FrameStackFind(_PyD3G_FrameStackOf(tstate), f);
+        if (slot) slot->call_id = cid;
+        break;
+    }
+    default:
+        break;
+    }
+}
 
 void set_frame_call_id(PyFrameObject *frame, uint64_t cid) {
-    frame->f_frame->call_id = cid;
+    iframe_set_call_id(frame->f_frame, cid);
 }
 
 uint64_t get_frame_call_id(PyFrameObject *frame) {
-    return frame->f_frame->call_id;
+    return iframe_get_call_id(frame->f_frame);
 }
 
 /* ---- object extras helpers ---- */
@@ -524,7 +562,8 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
     if (!g_state.enabled) return;
     /* 0: untraced frame; UINT64_MAX: taint-excluded frame, whose decisions
      * must not be appended to the enclosing traced call. */
-    if (frame->call_id == 0 || frame->call_id == UINT64_MAX) return;
+    uint64_t cid = iframe_get_call_id(frame);
+    if (cid == 0 || cid == UINT64_MAX) return;
 
     PyFrameObject *frame_obj = frame->frame_obj;
     if (!frame_obj) return;
@@ -544,7 +583,8 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
 
 void d3g_exc_handler_hook(_PyInterpreterFrame *frame, int offset) {
     if (!g_state.enabled) return;
-    if (frame->call_id == 0 || frame->call_id == UINT64_MAX) return;
+    uint64_t cid = iframe_get_call_id(frame);
+    if (cid == 0 || cid == UINT64_MAX) return;
     PyFrameObject *frame_obj = frame->frame_obj;
     if (!frame_obj) return;
     FrameEntry *entry = frame_stack_peek(frame_obj);
@@ -766,9 +806,9 @@ void d3g_gen_create_hook(PyObject *gen, _PyInterpreterFrame *creator) {
     if (!g_state.enabled) return;
     CallRecordData *rec = current_record();
     if (!rec) return;
-    PyGenObject *g = (PyGenObject *)gen;
-    g->gi_d3g_created_id = rec->call_id;
-    g->gi_d3g_created_lineno =
+    _PyD3GGenExtras *extras = _PyD3G_GenExtras((PyGenObject *)gen);
+    extras->created_id = rec->call_id;
+    extras->created_lineno =
         (creator && creator->owner != FRAME_OWNED_BY_CSTACK)
             ? PyUnstable_InterpreterFrame_GetLine(creator)
             : 0;
@@ -778,9 +818,10 @@ static void record_call_identity(CallRecordData *rec, _PyInterpreterFrame *ifram
                                  PyCodeObject *code) {
     rec->func_idx = function_trace_id(PyStackRef_AsPyObjectBorrow(iframe->f_funcobj));
     if (iframe->owner == FRAME_OWNED_BY_GENERATOR) {
-        PyGenObject *g = _PyGen_GetGeneratorFromFrame(iframe);
-        rec->created_id = g->gi_d3g_created_id;
-        rec->created_lineno = g->gi_d3g_created_lineno;
+        _PyD3GGenExtras *extras =
+            _PyD3G_GenExtras(_PyGen_GetGeneratorFromFrame(iframe));
+        rec->created_id = extras->created_id;
+        rec->created_lineno = extras->created_lineno;
     }
     int nargs = code->co_argcount + code->co_kwonlyargcount;
     for (int i = 0; i < nargs; i++) {

@@ -130,6 +130,10 @@ _PyFrame_NumSlotsForCodeObject(PyCodeObject *code)
     return code->co_framesize - FRAME_SPECIALS_SIZE;
 }
 
+// D3G: side storage for the tracer's per-frame call id. Included here
+// (rather than at the top) because it needs _PyFrame_NumSlotsForCodeObject.
+#include "pycore_d3g_frame.h"
+
 static inline void _PyFrame_Copy(_PyInterpreterFrame *src, _PyInterpreterFrame *dest)
 {
     dest->f_executable = PyStackRef_MakeHeapSafe(src->f_executable);
@@ -188,7 +192,6 @@ _PyFrame_Initialize(
     PyThreadState *tstate, _PyInterpreterFrame *frame, _PyStackRef func,
     PyObject *locals, PyCodeObject *code, int null_locals_from, _PyInterpreterFrame *previous)
 {
-    frame->call_id = 0;
     frame->previous = previous;
     frame->f_funcobj = func;
     frame->f_executable = PyStackRef_FromPyObjectNew(code);
@@ -356,6 +359,7 @@ _PyFrame_PushUnchecked(PyThreadState *tstate, _PyStackRef func, int null_locals_
     _PyInterpreterFrame *new_frame = (_PyInterpreterFrame *)tstate->datastack_top;
     tstate->datastack_top += code->co_framesize;
     assert(tstate->datastack_top < tstate->datastack_limit);
+    _PyD3G_PushFrame(tstate, new_frame);
     _PyFrame_Initialize(tstate, new_frame, func, NULL, code, null_locals_from,
                         previous);
     return new_frame;
@@ -370,6 +374,7 @@ _PyFrame_PushTrampolineUnchecked(PyThreadState *tstate, PyCodeObject *code, int 
     _PyInterpreterFrame *frame = (_PyInterpreterFrame *)tstate->datastack_top;
     tstate->datastack_top += code->co_framesize;
     assert(tstate->datastack_top < tstate->datastack_limit);
+    _PyD3G_PushFrame(tstate, frame);
     frame->previous = previous;
     frame->f_funcobj = PyStackRef_None;
     frame->f_executable = PyStackRef_FromPyObjectNew(code);

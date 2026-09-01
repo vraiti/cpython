@@ -1727,6 +1727,7 @@ clear_datastack(PyThreadState *tstate)
                               tstate->datastack_cached_chunk->size);
         tstate->datastack_cached_chunk = NULL;
     }
+    _PyD3G_FrameStackClear(_PyD3G_FrameStackOf(tstate));
 }
 
 void
@@ -1851,6 +1852,10 @@ PyThreadState_Clear(PyThreadState *tstate)
     _PyMem_AbandonDelayed(tstate);
 
     _PyThreadState_ClearMimallocHeaps(tstate);
+
+    // D3G: the after-fork path (_PyThreadState_DeleteList) frees the thread
+    // state without clear_datastack(); release the call-id stack here too.
+    _PyD3G_FrameStackClear(_PyD3G_FrameStackOf(tstate));
 
     tstate->_status.cleared = 1;
 
@@ -3075,18 +3080,26 @@ _PyInterpreterFrame *
 _PyThreadState_PushFrame(PyThreadState *tstate, size_t size)
 {
     assert(size < INT_MAX/sizeof(PyObject *));
+    _PyInterpreterFrame *res;
     if (_PyThreadState_HasStackSpace(tstate, (int)size)) {
-        _PyInterpreterFrame *res = (_PyInterpreterFrame *)tstate->datastack_top;
+        res = (_PyInterpreterFrame *)tstate->datastack_top;
         tstate->datastack_top += size;
-        return res;
     }
-    return (_PyInterpreterFrame *)push_chunk(tstate, (int)size);
+    else {
+        res = (_PyInterpreterFrame *)push_chunk(tstate, (int)size);
+        if (res == NULL) {
+            return NULL;
+        }
+    }
+    _PyD3G_PushFrame(tstate, res);
+    return res;
 }
 
 void
 _PyThreadState_PopFrame(PyThreadState *tstate, _PyInterpreterFrame * frame)
 {
     assert(tstate->datastack_chunk);
+    _PyD3G_PopFrame(tstate, frame);
     PyObject **base = (PyObject **)frame;
     if (base == &tstate->datastack_chunk->data[0]) {
         _PyStackChunk *chunk = tstate->datastack_chunk;
@@ -3108,6 +3121,59 @@ _PyThreadState_PopFrame(PyThreadState *tstate, _PyInterpreterFrame * frame)
         assert(tstate->datastack_top >= base);
         tstate->datastack_top = base;
     }
+}
+
+
+/* D3G: out-of-line parts of the per-thread call-id stack
+ * (pycore_d3g_frame.h). Raw allocator: the stack is thread-private and
+ * these run without any GIL assumptions. */
+
+int
+_PyD3G_FrameStackGrow(_PyD3GFrameStack *st)
+{
+    size_t cap = st->cap ? st->cap * 2 : 256;
+    _PyD3GFrameSlot *slots = PyMem_RawRealloc(st->slots, cap * sizeof(*slots));
+    if (slots == NULL) {
+        return -1;
+    }
+    st->slots = slots;
+    st->cap = cap;
+    return 0;
+}
+
+/* The frame being popped is not the top slot. Either it was allocated
+ * without a slot (an allocation that bypassed the push helpers), in which
+ * case nothing is recorded for it and the stack is left alone, or slots
+ * above it are stale and are discarded with it. */
+void
+_PyD3G_FrameStackPopSlow(_PyD3GFrameStack *st, _PyInterpreterFrame *frame)
+{
+    for (size_t i = st->count; i-- > 0;) {
+        if (st->slots[i].frame == frame) {
+            st->count = i;
+            return;
+        }
+    }
+}
+
+_PyD3GFrameSlot *
+_PyD3G_FrameStackFind(_PyD3GFrameStack *st, _PyInterpreterFrame *frame)
+{
+    for (size_t i = st->count; i-- > 0;) {
+        if (st->slots[i].frame == frame) {
+            return &st->slots[i];
+        }
+    }
+    return NULL;
+}
+
+void
+_PyD3G_FrameStackClear(_PyD3GFrameStack *st)
+{
+    PyMem_RawFree(st->slots);
+    st->slots = NULL;
+    st->count = 0;
+    st->cap = 0;
 }
 
 

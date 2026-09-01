@@ -835,6 +835,7 @@ gen_sizeof(PyObject *op, PyObject *Py_UNUSED(ignored))
     res = offsetof(PyGenObject, gi_iframe) + offsetof(_PyInterpreterFrame, localsplus);
     PyCodeObject *code = _PyGen_GetCode(gen);
     res += _PyFrame_NumSlotsForCodeObject(code) * sizeof(PyObject *);
+    res += _PyD3G_GEN_EXTRA_SLOTS * sizeof(PyObject *);
     return PyLong_FromSsize_t(res);
 }
 
@@ -916,14 +917,15 @@ static PyObject *
 make_gen(PyTypeObject *type, PyFunctionObject *func)
 {
     PyCodeObject *code = (PyCodeObject *)func->func_code;
-    int slots = _PyFrame_NumSlotsForCodeObject(code);
+    /* D3G: tracer data is kept in extra items after the frame's slots
+     * (pycore_d3g_frame.h), leaving the struct layout untouched. */
+    int slots = _PyFrame_NumSlotsForCodeObject(code) + _PyD3G_GEN_EXTRA_SLOTS;
     PyGenObject *gen = PyObject_GC_NewVar(PyGenObject, type, slots);
     if (gen == NULL) {
         return NULL;
     }
     gen->gi_frame_state = FRAME_CLEARED;
-    gen->gi_d3g_created_id = 0;
-    gen->gi_d3g_created_lineno = 0;
+    memset(_PyD3G_GenExtrasForCode(gen, code), 0, sizeof(_PyD3GGenExtras));
     gen->gi_weakreflist = NULL;
     gen->gi_exc_state.exc_value = NULL;
     gen->gi_exc_state.previous_item = NULL;
@@ -991,12 +993,13 @@ gen_new_with_qualname(PyTypeObject *type, PyFrameObject *f,
                       PyObject *name, PyObject *qualname)
 {
     PyCodeObject *code = _PyFrame_GetCode(f->f_frame);
-    int size = code->co_nlocalsplus + code->co_stacksize;
+    int size = code->co_nlocalsplus + code->co_stacksize + _PyD3G_GEN_EXTRA_SLOTS;
     PyGenObject *gen = PyObject_GC_NewVar(PyGenObject, type, size);
     if (gen == NULL) {
         Py_DECREF(f);
         return NULL;
     }
+    memset(_PyD3G_GenExtrasForCode(gen, code), 0, sizeof(_PyD3GGenExtras));
     /* Copy the frame */
     assert(f->f_frame->frame_obj == NULL);
     assert(f->f_frame->owner == FRAME_OWNED_BY_FRAME_OBJECT);

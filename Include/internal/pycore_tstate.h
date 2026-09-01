@@ -12,6 +12,7 @@ extern "C" {
 #include "pycore_freelist_state.h"  // struct _Py_freelists
 #include "pycore_mimalloc.h"        // struct _mimalloc_thread_state
 #include "pycore_qsbr.h"            // struct qsbr
+#include "pycore_d3g_structs.h"     // _PyD3GFrameStack
 
 
 #ifdef Py_GIL_DISABLED
@@ -85,6 +86,11 @@ typedef struct _PyThreadStateImpl {
     // cache line with other allocations.
     char __padding[64];
 #endif
+
+    // D3G: parallel stack of per-frame call ids for frames on this
+    // thread's data stack (pycore_d3g_frame.h). Appended last so every
+    // upstream field keeps its offset.
+    _PyD3GFrameStack d3g_frames;
 } _PyThreadStateImpl;
 
 #ifdef __cplusplus

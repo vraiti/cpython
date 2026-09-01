@@ -12,6 +12,7 @@
 #  error "this header requires Py_BUILD_CORE define"
 #endif
 
+#include <stddef.h>               // offsetof
 #include "pycore_structs.h"       // _PyStackRef
 #include "pycore_typedefs.h"      // _PyInterpreterFrame
 
@@ -28,7 +29,6 @@ enum _frameowner {
 };
 
 struct _PyInterpreterFrame {
-    uint64_t call_id;
     _PyStackRef f_executable; /* Deferred or strong reference (code object or None) */
     struct _PyInterpreterFrame *previous;
     _PyStackRef f_funcobj; /* Deferred or strong reference. Only valid if not on C stack */
@@ -70,10 +70,6 @@ struct _PyInterpreterFrame {
     char prefix##_hooks_inited;                                             \
     char prefix##_closed;                                                   \
     char prefix##_running_async;                                            \
-    /* D3G: call that created this generator/coroutine, and the line of   */\
-    /* the creating call expression; 0 when created outside tracing.     */\
-    uint64_t prefix##_d3g_created_id;                                       \
-    int32_t prefix##_d3g_created_lineno;                                    \
     /* The frame */                                                         \
     int8_t prefix##_frame_state;                                            \
     _PyInterpreterFrame prefix##_iframe;                                    \
@@ -92,6 +88,22 @@ struct _PyAsyncGenObject {
 };
 
 #undef _PyGenObject_HEAD
+
+/* D3G: these structs are read by offset from prebuilt extensions compiled
+ * against upstream CPython's headers (PyTorch's Dynamo includes this file
+ * directly), so tracer state must never be added to them; it lives in
+ * pycore_d3g_frame.h's side storage instead. Pin the upstream 3.14 layout
+ * on the common configuration so a regression fails to compile. */
+#if SIZEOF_VOID_P == 8 && !defined(Py_GIL_DISABLED) && !defined(Py_TRACE_REFS)
+static_assert(offsetof(struct _PyInterpreterFrame, f_executable) == 0,
+              "_PyInterpreterFrame layout differs from upstream CPython 3.14");
+static_assert(sizeof(struct _PyInterpreterFrame) == 88,
+              "_PyInterpreterFrame layout differs from upstream CPython 3.14");
+static_assert(offsetof(struct _PyGenObject, gi_iframe) == 72,
+              "_PyGenObject layout differs from upstream CPython 3.14");
+static_assert(sizeof(struct _PyGenObject) == 160,
+              "_PyGenObject layout differs from upstream CPython 3.14");
+#endif
 
 
 #ifdef __cplusplus
