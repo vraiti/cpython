@@ -12,7 +12,7 @@
 
 #include "Python.h"
 #include "pycore_abstract.h"      // _PyIndex_Check()
-#include "tracer_hooks.h"         // d3g_buffer_*_hook()
+#include "d3g_hooks.h"         // d3g_buffer_*_hook()
 #include "pycore_memoryobject.h"  // _PyManagedBuffer_Type
 #include "pycore_object.h"        // _PyObject_GC_UNTRACK()
 #include "pycore_strhex.h"        // _Py_strhex_with_sep()

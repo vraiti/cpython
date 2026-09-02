@@ -1,7 +1,7 @@
 /* Python interpreter top-level routines, including init/exit */
 
 #include "Python.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 #include "pycore_audit.h"         // _PySys_ClearAuditHooks()
 #include "pycore_call.h"          // _PyObject_CallMethod()
 #include "pycore_ceval.h"         // _PyEval_FiniGIL()

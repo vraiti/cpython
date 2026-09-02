@@ -1,5 +1,5 @@
-#ifndef TRACER_CONTAINERS_SET_H
-#define TRACER_CONTAINERS_SET_H
+#ifndef D3G_CONTAINERS_SET_H
+#define D3G_CONTAINERS_SET_H
 
 #include "../hashmap.h"
 #include <stddef.h>

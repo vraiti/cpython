@@ -91,7 +91,7 @@ struct _PyAsyncGenObject {
 
 /* D3G: these structs are read by offset from prebuilt extensions compiled
  * against upstream CPython's headers (PyTorch's Dynamo includes this file
- * directly), so tracer state must never be added to them; it lives in
+ * directly), so d3g state must never be added to them; it lives in
  * pycore_d3g_frame.h's side storage instead. Pin the upstream 3.14 layout
  * on the common configuration so a regression fails to compile. */
 #if SIZEOF_VOID_P == 8 && !defined(Py_GIL_DISABLED) && !defined(Py_TRACE_REFS)

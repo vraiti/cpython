@@ -1,5 +1,5 @@
-#ifndef TRACER_RECORDS_H
-#define TRACER_RECORDS_H
+#ifndef D3G_RECORDS_H
+#define D3G_RECORDS_H
 
 #include <Python.h>
 #include <stdint.h>

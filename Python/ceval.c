@@ -47,7 +47,7 @@
 #include "pydtrace.h"
 #include "setobject.h"
 #include "pycore_stackref.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 #include <stdbool.h>              // bool
 

@@ -149,7 +149,7 @@ PyObject_LengthHint(PyObject *o, Py_ssize_t defaultvalue)
     return res;
 }
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 PyObject *
 PyObject_GetItem(PyObject *o, PyObject *key)

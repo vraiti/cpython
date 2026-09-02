@@ -1,10 +1,10 @@
-#ifndef TRACER_WRITER_H
-#define TRACER_WRITER_H
+#ifndef D3G_WRITER_H
+#define D3G_WRITER_H
 
 /* Online trace serialization.
  *
  * Completed records are handed to a bounded ring buffer and consumed by a
- * dedicated writer thread that appends them to $PYTHON_TRACER_OUTDIR/{pid}.db
+ * dedicated writer thread that appends them to $PYTHON_D3G_OUTDIR/{pid}.db
  * while the program runs, so process memory holds only records that are
  * still being built (active calls, live objects) plus the ring itself.
  *

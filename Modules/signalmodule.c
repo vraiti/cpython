@@ -4,7 +4,7 @@
 /* XXX Signals should be recorded per thread, now we have thread state. */
 
 #include "Python.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 #include "pycore_call.h"          // _PyObject_Call()
 #include "pycore_ceval.h"         // _PyEval_SignalReceived()
 #include "pycore_emscripten_signal.h"  // _Py_CHECK_EMSCRIPTEN_SIGNALS
@@ -1803,7 +1803,7 @@ int
 _PyErr_CheckSignalsTstate(PyThreadState *tstate)
 {
     _Py_CHECK_EMSCRIPTEN_SIGNALS();
-    /* SIG_DFL signals intercepted by the tracer (flushes and re-raises). */
+    /* SIG_DFL signals intercepted by d3g (flushes and re-raises). */
     d3g_check_pending_signals();
     if (!_Py_atomic_load_int(&is_tripped)) {
         return 0;

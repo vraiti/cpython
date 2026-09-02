@@ -1,5 +1,5 @@
-#ifndef TRACER_CONTAINERS_H
-#define TRACER_CONTAINERS_H
+#ifndef D3G_CONTAINERS_H
+#define D3G_CONTAINERS_H
 
 #include <Python.h>
 #include <stdint.h>

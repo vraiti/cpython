@@ -15,8 +15,8 @@
  * 1 = exhausted), 3 unconditional jump, 4 SEND (await; continue at the
  * target), 5 GET_ANEXT (byte 0 per attempt; a following 2 means the loop
  * is exhausted, continue at the target), 6 return/raise, 7 exception
- * handler entry (PUSH_EXC_INFO; `target` holds the code-unit offset the
- * tracer records when the handler is entered, not a record index).
+ * handler entry (PUSH_EXC_INFO; `target` holds the code-unit offset d3g
+ * records when the handler is entered, not a record index).
  *
  * Returns a malloc'd buffer (NULL if empty or on failure) and its length. */
 uint8_t *d3g_build_cfg(PyCodeObject *co, size_t *len_out);

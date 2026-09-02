@@ -17,7 +17,7 @@
 
 #include "Python.h"
 #include "pycore_ceval.h"        /* _PyEval_SignalReceived */
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 #include <signal.h>
 #include <errno.h>
 

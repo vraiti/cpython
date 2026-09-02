@@ -85,7 +85,7 @@ my_getpagesize(void)
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
 #endif /* HAVE_SYS_TYPES_H */
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 /* Prefer MAP_ANONYMOUS since MAP_ANON is deprecated according to man page. */
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)

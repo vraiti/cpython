@@ -130,7 +130,7 @@ _PyFrame_NumSlotsForCodeObject(PyCodeObject *code)
     return code->co_framesize - FRAME_SPECIALS_SIZE;
 }
 
-// D3G: side storage for the tracer's per-frame call id. Included here
+// D3G: side storage for d3g's per-frame call id. Included here
 // (rather than at the top) because it needs _PyFrame_NumSlotsForCodeObject.
 #include "pycore_d3g_frame.h"
 

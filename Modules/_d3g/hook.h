@@ -1,5 +1,5 @@
-#ifndef TRACER_HOOK_H
-#define TRACER_HOOK_H
+#ifndef D3G_HOOK_H
+#define D3G_HOOK_H
 
 #include <Python.h>
 #include <stdint.h>

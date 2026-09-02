@@ -213,7 +213,7 @@ static PyType_Slot PathFilter_slots[] = {
 };
 
 static PyType_Spec PathFilter_spec = {
-    .name = "tracer._tracer.PathFilter",
+    .name = "d3g._d3g.PathFilter",
     .basicsize = sizeof(PathFilterObject),
     .flags = Py_TPFLAGS_DEFAULT,
     .slots = PathFilter_slots,

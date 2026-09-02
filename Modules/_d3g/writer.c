@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <ctype.h>
 
 #define RING_CAP   (1u << 16)   /* events; ~3 MiB of slots */
 #define BATCH_MAX  4096         /* events per transaction */
@@ -40,7 +44,7 @@ static pid_t db_pid;
 
 /* Events received before the first call. A process that never records a
  * call never opens its database (incidental subprocesses that merely
- * inherit PYTHON_TRACER_CONFIG); these are buffered until a call arrives
+ * inherit PYTHON_D3G_CONFIG); these are buffered until a call arrives
  * and discarded at stop if none does. */
 static TraceEvent *pending = NULL;
 static size_t pending_len = 0, pending_cap = 0;
@@ -89,7 +93,7 @@ static void free_event(TraceEvent *ev) {
 static int exec_sql(const char *sql) {
     char *err = NULL;
     if (sqlite3_exec(sdb, sql, NULL, NULL, &err) != SQLITE_OK) {
-        fprintf(stderr, "tracer: SQL error: %s\n", err);
+        fprintf(stderr, "d3g: SQL error: %s\n", err);
         sqlite3_free(err);
         return -1;
     }
@@ -162,21 +166,91 @@ static const char *SCHEMA_SQL =
 
 static int prep(sqlite3_stmt **out, const char *sql) {
     if (sqlite3_prepare_v2(sdb, sql, -1, out, NULL) != SQLITE_OK) {
-        fprintf(stderr, "tracer: prepare failed: %s\n", sqlite3_errmsg(sdb));
+        fprintf(stderr, "d3g: prepare failed: %s\n", sqlite3_errmsg(sdb));
         return -1;
     }
     return 0;
 }
 
+static int is_all_digits(const char *s) {
+    if (!*s) return 0;
+    for (; *s; s++)
+        if (!isdigit((unsigned char)*s)) return 0;
+    return 1;
+}
+
+static int next_run_index(const char *outdir) {
+    DIR *d = opendir(outdir);
+    int max = 0;
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d))) {
+            if (is_all_digits(ent->d_name)) {
+                int v = atoi(ent->d_name);
+                if (v > max) max = v;
+            }
+        }
+        closedir(d);
+    }
+    return max + 1;
+}
+
+/* A process belongs to the same trace run as its immediate parent if that
+ * parent already has a "{n}/{parent_pid}.db" under outdir -- find the
+ * highest such n (ties only arise from a recycled parent_pid in a
+ * different, older run, in which case the highest n is the correct, more
+ * recent one). */
+static int find_parent_run(const char *outdir, pid_t parent_pid, char *out, size_t out_size) {
+    DIR *d = opendir(outdir);
+    if (!d) return -1;
+    int found = -1;
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (!is_all_digits(ent->d_name)) continue;
+        char candidate[4096];
+        snprintf(candidate, sizeof(candidate), "%s/%s/%d.db", outdir, ent->d_name, (int)parent_pid);
+        struct stat st_buf;
+        if (stat(candidate, &st_buf) == 0) {
+            int v = atoi(ent->d_name);
+            if (v > found) found = v;
+        }
+    }
+    closedir(d);
+    if (found < 0) return -1;
+    snprintf(out, out_size, "%s/%d", outdir, found);
+    return 0;
+}
+
+/* Resolves PYTHON_D3G_OUTDIR to a numbered run directory, so the trace
+ * with the largest number is always the latest. A process whose parent
+ * already opened a db under some outdir/{n} joins that same run; a process
+ * with no traced parent (the root of a new trace tree) claims the next free
+ * index instead (mkdir is atomic, so concurrent roots racing here can't
+ * collide on one index). */
+static int resolve_run_dir(const char *outdir, char *out, size_t out_size) {
+    if (find_parent_run(outdir, getppid(), out, out_size) == 0)
+        return 0;
+
+    mkdir(outdir, 0755);
+    for (int idx = next_run_index(outdir); ; idx++) {
+        snprintf(out, out_size, "%s/%d", outdir, idx);
+        if (mkdir(out, 0755) == 0) break;
+        if (errno != EEXIST) return -1;
+    }
+    return 0;
+}
+
 static int open_db(void) {
-    const char *outdir = getenv("PYTHON_TRACER_OUTDIR");
+    const char *outdir = getenv("PYTHON_D3G_OUTDIR");
     if (!outdir) return -1;
+    char run_dir[4096];
+    if (resolve_run_dir(outdir, run_dir, sizeof(run_dir)) < 0) return -1;
     db_pid = getpid();
-    snprintf(db_path, sizeof(db_path), "%s/%d.db", outdir, (int)db_pid);
+    snprintf(db_path, sizeof(db_path), "%s/%d.db", run_dir, (int)db_pid);
     unlink(db_path);
 
     if (sqlite3_open(db_path, &sdb) != SQLITE_OK) {
-        fprintf(stderr, "tracer: failed to open %s: %s\n", db_path,
+        fprintf(stderr, "d3g: failed to open %s: %s\n", db_path,
                 sqlite3_errmsg(sdb));
         sqlite3_close(sdb);
         sdb = NULL;
@@ -221,12 +295,10 @@ static int open_db(void) {
         goto fail;
 
     opened = 1;
-    fprintf(stderr, "tracer: open_db succeeded for pid %d, db_path=%s\n",
-            (int)db_pid, db_path);
     return 0;
 
 fail:
-    fprintf(stderr, "tracer: cannot initialize %s: %s\n", db_path,
+    fprintf(stderr, "d3g: cannot initialize %s: %s\n", db_path,
             sqlite3_errmsg(sdb));
     sqlite3_close(sdb);
     sdb = NULL;
@@ -235,8 +307,6 @@ fail:
 
 static void close_db(void) {
     if (!sdb) return;
-    fprintf(stderr, "tracer: close_db running for pid %d, db_path=%s\n",
-            (int)db_pid, db_path);
     sqlite3_finalize(st.call);
     sqlite3_finalize(st.attr_read);
     sqlite3_finalize(st.object);
@@ -530,7 +600,7 @@ int writer_start(void) {
     if (pthread_create(&thread, NULL, writer_main, NULL) != 0) {
         busy = 0;
         pthread_mutex_unlock(&mu);
-        fprintf(stderr, "tracer: cannot start writer thread\n");
+        fprintf(stderr, "d3g: cannot start writer thread\n");
         return -1;
     }
     running = 1;

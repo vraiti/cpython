@@ -1,5 +1,5 @@
-#ifndef TRACER_OWNERSHIP_H
-#define TRACER_OWNERSHIP_H
+#ifndef D3G_OWNERSHIP_H
+#define D3G_OWNERSHIP_H
 
 #include <Python.h>
 

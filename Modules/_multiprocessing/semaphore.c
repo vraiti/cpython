@@ -8,7 +8,7 @@
  */
 
 #include "multiprocessing.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 #ifdef HAVE_SYS_TIME_H
 #  include <sys/time.h>           // gettimeofday()

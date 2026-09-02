@@ -540,7 +540,7 @@ set_next(PySetObject *so, Py_ssize_t *pos_ptr, setentry **entry_ptr)
     return 1;
 }
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 static void
 set_dealloc(PyObject *self)

@@ -12,9 +12,9 @@
 #include "pycore_pystate.h"       // _PyInterpreterState_GET()
 #include "pycore_pythonrun.h"     // _PyRun_AnyFile()
 #include "pycore_unicodeobject.h" // _PyUnicode_Dedent()
-#include "_tracer/hook.h"
-#include "_tracer/records.h"
-#include "_tracer/tracer_hooks.h"
+#include "_d3g/hook.h"
+#include "_d3g/records.h"
+#include "_d3g/d3g_hooks.h"
 
 /* Includes for exit_sigint() */
 #include <stdio.h>                // perror()
@@ -743,14 +743,14 @@ pymain_run_python(int *exitcode)
     }
 
     {
-        const char *tracer_cfg = getenv("PYTHON_TRACER_CONFIG");
-        if (tracer_cfg && tracer_cfg[0]) {
+        const char *d3g_cfg = getenv("PYTHON_D3G_CONFIG");
+        if (d3g_cfg && d3g_cfg[0]) {
             PyObject *mod = PyImport_ImportModule("d3g._bootstrap");
             if (mod) {
                 PyObject *res = PyObject_CallMethod(mod, "init", NULL);
                 Py_XDECREF(res);
                 if (PyErr_Occurred()) {
-                    fprintf(stderr, "tracer: init failed\n");
+                    fprintf(stderr, "d3g: init failed\n");
                     PyErr_Print();
                     *exitcode = 1;
                     Py_DECREF(mod);
@@ -759,7 +759,7 @@ pymain_run_python(int *exitcode)
                 Py_DECREF(mod);
                 d3g_enumerate_fds();
             } else {
-                fprintf(stderr, "tracer: could not import d3g._bootstrap\n");
+                fprintf(stderr, "d3g: could not import d3g._bootstrap\n");
                 PyErr_Print();
                 *exitcode = 1;
                 goto done;

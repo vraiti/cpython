@@ -1928,7 +1928,7 @@ _PyObject_GenericGetAttrWithDict(PyObject *obj, PyObject *name,
     return res;
 }
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 PyObject *
 PyObject_GenericGetAttr(PyObject *obj, PyObject *name)

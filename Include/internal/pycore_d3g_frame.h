@@ -1,4 +1,4 @@
-/* D3G tracer: where a frame's call_id lives.
+/* D3G: where a frame's call_id lives.
  *
  * Nothing is added to _PyInterpreterFrame or to the generator objects that
  * embed one: both structs are compiled into prebuilt extensions that read

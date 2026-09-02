@@ -917,7 +917,7 @@ static PyObject *
 make_gen(PyTypeObject *type, PyFunctionObject *func)
 {
     PyCodeObject *code = (PyCodeObject *)func->func_code;
-    /* D3G: tracer data is kept in extra items after the frame's slots
+    /* D3G: call data is kept in extra items after the frame's slots
      * (pycore_d3g_frame.h), leaving the struct layout untouched. */
     int slots = _PyFrame_NumSlotsForCodeObject(code) + _PyD3G_GEN_EXTRA_SLOTS;
     PyGenObject *gen = PyObject_GC_NewVar(PyGenObject, type, slots);

@@ -3361,7 +3361,7 @@ Fail:
 
 /* Methods */
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 static void
 dict_dealloc(PyObject *self)

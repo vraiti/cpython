@@ -9,7 +9,7 @@ posixshmem - A Python extension that provides shm_open() and shm_unlink()
 #endif
 
 #include <Python.h>
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 #include <string.h>               // strlen()
 #include <errno.h>                // EINTR

@@ -10,7 +10,7 @@
 // --- Python includes ------------------------------------------------------
 
 #include "Python.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 #ifdef __VXWORKS__
 #  include "pycore_bitutils.h"    // _Py_popcount32()

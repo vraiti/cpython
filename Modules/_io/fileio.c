@@ -21,7 +21,7 @@
 #endif
 
 #include "_iomodule.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 /*
  * Known likely problems:

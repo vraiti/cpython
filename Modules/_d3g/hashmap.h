@@ -1,5 +1,5 @@
-#ifndef TRACER_HASHMAP_H
-#define TRACER_HASHMAP_H
+#ifndef D3G_HASHMAP_H
+#define D3G_HASHMAP_H
 
 #include <stdint.h>
 #include <stddef.h>

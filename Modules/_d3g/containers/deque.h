@@ -1,5 +1,5 @@
-#ifndef TRACER_CONTAINERS_DEQUE_H
-#define TRACER_CONTAINERS_DEQUE_H
+#ifndef D3G_CONTAINERS_DEQUE_H
+#define D3G_CONTAINERS_DEQUE_H
 
 #include "../hashmap.h"
 #include <stddef.h>

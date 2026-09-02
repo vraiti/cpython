@@ -5,14 +5,14 @@
 #include "ownership.h"
 #include "containers/containers.h"
 
-static struct PyModuleDef tracer_module = {
+static struct PyModuleDef d3g_module = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "_tracer",
+    .m_name = "_d3g",
     .m_size = -1,
 };
 
-PyMODINIT_FUNC PyInit__tracer(void) {
-    PyObject *m = PyModule_Create(&tracer_module);
+PyMODINIT_FUNC PyInit__d3g(void) {
+    PyObject *m = PyModule_Create(&d3g_module);
     if (!m) return NULL;
 
     if (records_init(m) < 0) goto fail;

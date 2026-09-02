@@ -1,4 +1,4 @@
-/* D3G tracer: plain data structures that other internal structs embed.
+/* D3G: plain data structures that other internal structs embed.
  *
  * Kept free of interpreter dependencies so pycore_tstate.h can include it.
  * The inline accessors live in pycore_d3g_frame.h.
@@ -21,7 +21,7 @@ extern "C" {
 struct _PyInterpreterFrame;
 
 /* One entry per frame allocated on the thread's data stack, in push
- * order. The frame pointer identifies the slot; call_id is the tracer's
+ * order. The frame pointer identifies the slot; call_id is d3g's
  * per-call identity (0: untraced, UINT64_MAX: taint-excluded). */
 typedef struct {
     struct _PyInterpreterFrame *frame;
@@ -37,7 +37,7 @@ typedef struct {
     size_t cap;
 } _PyD3GFrameStack;
 
-/* Tracer data for a generator/coroutine/async generator, stored in extra
+/* D3G data for a generator/coroutine/async generator, stored in extra
  * slots appended to the object's own variable-size allocation, after the
  * embedded frame's localsplus array (see _PyD3G_GenExtras). */
 typedef struct {

@@ -205,7 +205,7 @@ PyTuple_Pack(Py_ssize_t n, ...)
 
 /* Methods */
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 static void
 tuple_dealloc(PyObject *self)

@@ -6,7 +6,7 @@ one length-prefixed binary record holding only what the dataflow resolver
 consumes for those functions: parameter names and a statement skeleton
 with line numbers, control-flow bodies, assignment targets and the
 name/attribute/call expressions the resolver inspects. Control flow is
-replayed from the bytecode graph the tracer stored in the trace, so
+replayed from the bytecode graph d3g stored in the trace, so
 nothing about branches is sent here.
 
 Wire format (little-endian; NONE = 0xFFFFFFFF for optional indices):

@@ -545,7 +545,7 @@ PyList_Append(PyObject *op, PyObject *newitem)
 
 /* Methods */
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 static void
 list_dealloc(PyObject *self)

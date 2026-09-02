@@ -136,7 +136,7 @@ static PyType_Slot Database_slots[] = {
 };
 
 static PyType_Spec Database_spec = {
-    .name = "tracer._tracer.Database",
+    .name = "d3g._d3g.Database",
     .basicsize = sizeof(DatabaseObject),
     .flags = Py_TPFLAGS_DEFAULT,
     .slots = Database_slots,

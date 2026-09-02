@@ -1,5 +1,5 @@
-#ifndef TRACER_FILTER_H
-#define TRACER_FILTER_H
+#ifndef D3G_FILTER_H
+#define D3G_FILTER_H
 
 #include <Python.h>
 #include "hashmap.h"

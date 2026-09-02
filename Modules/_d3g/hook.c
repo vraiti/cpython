@@ -1,5 +1,5 @@
 #include "hook.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 #include "containers/containers.h"
 #include "writer.h"
 #include "cfg.h"
@@ -1609,7 +1609,7 @@ void d3g_gen_iter_hook(_PyInterpreterFrame *caller, int exhausted) {
 
 /* Finish this process's trace: disable tracing, hand every still-live
  * call and object record to the writer, and join the writer thread so
- * $PYTHON_TRACER_OUTDIR/{pid}.db is complete on return. Idempotent.
+ * $PYTHON_D3G_OUTDIR/{pid}.db is complete on return. Idempotent.
  * Called from uninstall(), the interpreter's normal exit path
  * (Modules/main.c), and os._exit(), which otherwise skips all cleanup and
  * would lose a forked child's in-flight records.

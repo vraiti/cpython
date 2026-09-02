@@ -9,10 +9,10 @@ db = None
 def init() -> None:
     global db
     import json
-    with open(os.environ["PYTHON_TRACER_CONFIG"]) as f:
+    with open(os.environ["PYTHON_D3G_CONFIG"]) as f:
         cfg = json.load(f) or {}
 
-    os.makedirs(os.environ["PYTHON_TRACER_OUTDIR"], exist_ok=True)
+    os.makedirs(os.environ["PYTHON_D3G_OUTDIR"], exist_ok=True)
 
     modules = cfg.get("modules") or []
     tracked_classes = cfg.get("classes") or []
@@ -33,7 +33,7 @@ def init() -> None:
             elif spec.origin:
                 prefixes.append(os.path.dirname(os.path.abspath(spec.origin)))
 
-    from _tracer import Database, PathFilter, install, install_thread
+    from _d3g import Database, PathFilter, install, install_thread
 
     path_filter = PathFilter(prefixes=prefixes, tracked_classes=tracked_classes)
     db = Database()  # noqa: F841 — stored as module global

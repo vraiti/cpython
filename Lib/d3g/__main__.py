@@ -1,6 +1,6 @@
-"""Run a script under the tracer.
+"""Run a script under d3g.
 
-    PYTHON_TRACER_CONFIG=config.json PYTHON_TRACER_OUTDIR=dir \
+    PYTHON_D3G_CONFIG=config.json PYTHON_D3G_OUTDIR=dir \
         python -m d3g -- script.py [args...]
 
 Every traced process, this one included, streams its records into its own
@@ -24,10 +24,10 @@ def main() -> None:
         sys.argv = sys.argv[1:]
 
     if not sys.argv:
-        print("Usage: PYTHON_TRACER_CONFIG=config.json python -m d3g -- script.py [args...]", file=sys.stderr)
+        print("Usage: PYTHON_D3G_CONFIG=config.json python -m d3g -- script.py [args...]", file=sys.stderr)
         sys.exit(1)
 
-    from _tracer import uninstall
+    from _d3g import uninstall
 
     script = sys.argv[0]
     if not os.path.exists(script):
@@ -48,7 +48,7 @@ def main() -> None:
         pass
     finally:
         # Idempotent; the interpreter also flushes at finalization, on
-        # os._exit and on SIG_DFL termination (see Modules/_tracer/signals.c).
+        # os._exit and on SIG_DFL termination (see Modules/_d3g/signals.c).
         uninstall()
 
 

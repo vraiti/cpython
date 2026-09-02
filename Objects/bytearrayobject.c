@@ -1254,7 +1254,7 @@ bytearray_richcompare(PyObject *self, PyObject *other, int op)
 
 }
 
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 
 static void
 bytearray_dealloc(PyObject *op)

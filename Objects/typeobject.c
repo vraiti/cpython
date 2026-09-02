@@ -1,7 +1,7 @@
 /* Type object implementation */
 
 #include "Python.h"
-#include "tracer_hooks.h"
+#include "d3g_hooks.h"
 #include "pycore_abstract.h"      // _PySequence_IterSearch()
 #include "pycore_call.h"          // _PyObject_VectorcallTstate()
 #include "pycore_code.h"          // CO_FAST_FREE
