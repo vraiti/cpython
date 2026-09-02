@@ -757,6 +757,11 @@ pymain_run_python(int *exitcode)
                     goto done;
                 }
                 Py_DECREF(mod);
+                {
+                    const char *d3g_outdir = getenv("PYTHON_D3G_OUTDIR");
+                    fprintf(stderr, "D3G enabled with config=%s and outdir=%s\n",
+                            d3g_cfg, d3g_outdir ? d3g_outdir : "");
+                }
                 d3g_enumerate_fds();
             } else {
                 fprintf(stderr, "d3g: could not import d3g._bootstrap\n");
