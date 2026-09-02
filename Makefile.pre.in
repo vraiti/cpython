@@ -2559,6 +2559,7 @@ LIBSUBDIRS=	asyncio \
 		csv \
 		ctypes ctypes/macholib \
 		curses \
+		d3g \
 		dbm \
 		email email/mime \
 		encodings \

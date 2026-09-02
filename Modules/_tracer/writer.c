@@ -221,6 +221,8 @@ static int open_db(void) {
         goto fail;
 
     opened = 1;
+    fprintf(stderr, "tracer: open_db succeeded for pid %d, db_path=%s\n",
+            (int)db_pid, db_path);
     return 0;
 
 fail:
@@ -233,6 +235,8 @@ fail:
 
 static void close_db(void) {
     if (!sdb) return;
+    fprintf(stderr, "tracer: close_db running for pid %d, db_path=%s\n",
+            (int)db_pid, db_path);
     sqlite3_finalize(st.call);
     sqlite3_finalize(st.attr_read);
     sqlite3_finalize(st.object);
