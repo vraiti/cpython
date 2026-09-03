@@ -1,7 +1,9 @@
 """Merge per-process traces and build the dependency graph.
 
-    python -m d3g.postprocess DIR      # merge DIR/{pid}.db into DIR/trace.db, then postprocess
-    python -m d3g.postprocess trace.db # postprocess one database
+    python -m d3g.postprocess
+
+Merges $PYTHON_D3G_OUTDIR/{pid}.db into $PYTHON_D3G_OUTDIR/trace.db in
+place, then postprocesses it.
 
 The work is done by the Rust binary `d3g-postprocess` (source in
 postprocess/ at the repository root; build with `cargo build --release`).

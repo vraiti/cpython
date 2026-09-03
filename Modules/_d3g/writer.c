@@ -7,8 +7,6 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <errno.h>
-#include <ctype.h>
 
 #define RING_CAP   (1u << 16)   /* events; ~3 MiB of slots */
 #define BATCH_MAX  4096         /* events per transaction */
@@ -175,81 +173,63 @@ static int prep(sqlite3_stmt **out, const char *sql) {
     return 0;
 }
 
-static int is_all_digits(const char *s) {
-    if (!*s) return 0;
-    for (; *s; s++)
-        if (!isdigit((unsigned char)*s)) return 0;
-    return 1;
+static int is_db_file(const char *name) {
+    size_t len = strlen(name);
+    return len > 3 && strcmp(name + len - 3, ".db") == 0;
 }
 
-static int next_run_index(const char *outdir) {
+/* PYTHON_D3G_OUTDIR is claimed exclusively by d3g: a fresh trace run wipes
+ * whatever *.db files (including a previous run's merged trace.db) are left
+ * over from the last one, rather than accumulating numbered run directories
+ * forever. Anything else found there means the directory wasn't handed to
+ * d3g exclusively -- that's a configuration mistake, not something to route
+ * around, so it's fatal: the process exits rather than risk deleting or
+ * cohabiting with unrelated files. */
+static void validate_and_clear_outdir(const char *outdir) {
     DIR *d = opendir(outdir);
-    int max = 0;
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d))) {
-            if (is_all_digits(ent->d_name)) {
-                int v = atoi(ent->d_name);
-                if (v > max) max = v;
-            }
-        }
-        closedir(d);
-    }
-    return max + 1;
-}
-
-/* A process belongs to the same trace run as its immediate parent if that
- * parent already has a "{n}/{parent_pid}.db" under outdir -- find the
- * highest such n (ties only arise from a recycled parent_pid in a
- * different, older run, in which case the highest n is the correct, more
- * recent one). */
-static int find_parent_run(const char *outdir, pid_t parent_pid, char *out, size_t out_size) {
-    DIR *d = opendir(outdir);
-    if (!d) return -1;
-    int found = -1;
+    if (!d) return; /* doesn't exist yet -- nothing to validate or clear */
     struct dirent *ent;
     while ((ent = readdir(d))) {
-        if (!is_all_digits(ent->d_name)) continue;
-        char candidate[4096];
-        snprintf(candidate, sizeof(candidate), "%s/%s/%d.db", outdir, ent->d_name, (int)parent_pid);
-        struct stat st_buf;
-        if (stat(candidate, &st_buf) == 0) {
-            int v = atoi(ent->d_name);
-            if (v > found) found = v;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        if (!is_db_file(ent->d_name)) {
+            fprintf(stderr,
+                    "d3g: PYTHON_D3G_OUTDIR '%s' contains '%s', which is not a .db file; "
+                    "refusing to overwrite it\n", outdir, ent->d_name);
+            closedir(d);
+            exit(1);
         }
     }
-    closedir(d);
-    if (found < 0) return -1;
-    snprintf(out, out_size, "%s/%d", outdir, found);
-    return 0;
-}
-
-/* Resolves PYTHON_D3G_OUTDIR to a numbered run directory, so the trace
- * with the largest number is always the latest. A process whose parent
- * already opened a db under some outdir/{n} joins that same run; a process
- * with no traced parent (the root of a new trace tree) claims the next free
- * index instead (mkdir is atomic, so concurrent roots racing here can't
- * collide on one index). */
-static int resolve_run_dir(const char *outdir, char *out, size_t out_size) {
-    if (find_parent_run(outdir, getppid(), out, out_size) == 0)
-        return 0;
-
-    mkdir(outdir, 0755);
-    for (int idx = next_run_index(outdir); ; idx++) {
-        snprintf(out, out_size, "%s/%d", outdir, idx);
-        if (mkdir(out, 0755) == 0) break;
-        if (errno != EEXIST) return -1;
+    rewinddir(d);
+    while ((ent = readdir(d))) {
+        if (!is_db_file(ent->d_name)) continue;
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", outdir, ent->d_name);
+        unlink(path);
     }
-    return 0;
+    closedir(d);
 }
 
 static int open_db(void) {
     const char *outdir = getenv("PYTHON_D3G_OUTDIR");
     if (!outdir) return -1;
-    char run_dir[4096];
-    if (resolve_run_dir(outdir, run_dir, sizeof(run_dir)) < 0) return -1;
+
+    /* A process belongs to the same trace run as its immediate parent if
+     * that parent already has a "{parent_pid}.db" directly under outdir;
+     * only a process with no traced parent (the root of a new trace tree)
+     * clears outdir out for a fresh run. This assumes at most one trace
+     * tree writes to a given outdir at a time -- unlike the old numbered
+     * run directories, two unrelated root processes racing on the same
+     * outdir can now clobber each other. */
+    char parent_db[4096];
+    snprintf(parent_db, sizeof(parent_db), "%s/%d.db", outdir, (int)getppid());
+    struct stat st_buf;
+    int has_parent = (stat(parent_db, &st_buf) == 0);
+
+    mkdir(outdir, 0755);
+    if (!has_parent) validate_and_clear_outdir(outdir);
+
     db_pid = getpid();
-    snprintf(db_path, sizeof(db_path), "%s/%d.db", run_dir, (int)db_pid);
+    snprintf(db_path, sizeof(db_path), "%s/%d.db", outdir, (int)db_pid);
     unlink(db_path);
 
     if (sqlite3_open(db_path, &sdb) != SQLITE_OK) {
