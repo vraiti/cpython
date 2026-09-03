@@ -22,6 +22,9 @@ CallRecordData *db_add_call(DatabaseObject *db,
     rec->created_lineno = 0;
     rec->control_flow = NULL;
     rec->control_flow_len = 0;
+    rec->control_flow_bits = 0;
+    rec->control_flow_exc = NULL;
+    rec->control_flow_exc_len = 0;
     rec->attr_reads = NULL;
     rec->attr_reads_len = 0;
     rec->attr_reads_cap = 0;
@@ -90,6 +93,7 @@ void db_clear_records(DatabaseObject *db) {
     while (rec) {
         CallRecordData *next = rec->next;
         free(rec->control_flow);
+        free(rec->control_flow_exc);
         free(rec->attr_reads);
         free(rec);
         rec = next;

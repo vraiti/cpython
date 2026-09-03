@@ -25,13 +25,24 @@ typedef struct {
     SMap members;       /* attr/key -> child object id */
 } ObjectTraceData;
 
-/* Per-frame entry on the trace stack */
+/* Per-frame entry on the trace stack.
+ *
+ * Control flow is recorded as two independent, never-interleaved streams:
+ * `bits` (1 bit per branch/FOR/SEND decision, LSB-first within each byte)
+ * and `exc` (a varint-tuple per exception-handler entry: bit position delta
+ * since the previous exception in this same stream, handler offset from the
+ * function's start, and unwind depth -- how many nested traced calls below
+ * this frame were abandoned by the exception). */
 typedef struct {
     uint64_t call_id;
     CallRecordData *record;
-    uint8_t *branch_buf;
-    size_t branch_len;
-    size_t branch_cap;
+    uint8_t *bits;
+    size_t bit_pos;             /* bits written so far */
+    size_t bits_cap;            /* bytes allocated for `bits` */
+    uint8_t *exc;
+    size_t exc_len;             /* bytes written so far */
+    size_t exc_cap;
+    size_t last_exc_bit_pos;    /* for delta-encoding the next record's bit_pos */
 } FrameEntry;
 
 /* Per-(thread, coroutine) frame stack */

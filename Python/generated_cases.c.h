@@ -5563,7 +5563,7 @@
             stack_pointer = _PyFrame_GetStackPointer(frame);
             if (matches) {
                 _PyFrame_SetStackPointer(frame, stack_pointer);
-                d3g_branch_hook(frame, 2);
+                d3g_branch_hook(frame, 1);
                 _PyStackRef tmp = exc_st;
                 exc_st = PyStackRef_NULL;
                 stack_pointer[-1] = exc_st;
@@ -7059,7 +7059,7 @@
                 stack_pointer = _PyFrame_GetStackPointer(frame);
                 if (matches) {
                     _PyFrame_SetStackPointer(frame, stack_pointer);
-                    d3g_branch_hook(frame, 2);
+                    d3g_branch_hook(frame, 1);
                     _PyStackRef tmp = exc_st;
                     exc_st = PyStackRef_NULL;
                     stack_pointer[-1] = exc_st;

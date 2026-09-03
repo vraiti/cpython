@@ -171,8 +171,70 @@ static void frame_stack_pop(PyFrameObject *frame) {
     FrameStack *stack = get_frame_stack(frame);
     if (stack->count > 0) {
         FrameEntry *e = &stack->entries[--stack->count];
-        free(e->branch_buf);
+        free(e->bits);
+        free(e->exc);
     }
+}
+
+/* ---- control-flow blob: packed bits + varint exception records ---- */
+
+static void bits_append(FrameEntry *entry, unsigned bit) {
+    size_t byte_idx = entry->bit_pos >> 3;
+    if (byte_idx >= entry->bits_cap) {
+        entry->bits_cap = entry->bits_cap ? entry->bits_cap * 2 : 32;
+        uint8_t *tmp = realloc(entry->bits, entry->bits_cap);
+        if (!tmp) return;
+        entry->bits = tmp;
+    }
+    if ((entry->bit_pos & 7) == 0) entry->bits[byte_idx] = 0;
+    if (bit) entry->bits[byte_idx] |= (uint8_t)(1u << (entry->bit_pos & 7));
+    entry->bit_pos++;
+}
+
+static void exc_put_varint(FrameEntry *entry, uint64_t v) {
+    if (entry->exc_len + 10 > entry->exc_cap) {
+        size_t cap = entry->exc_cap ? entry->exc_cap * 2 : 32;
+        while (cap < entry->exc_len + 10) cap *= 2;
+        uint8_t *tmp = realloc(entry->exc, cap);
+        if (!tmp) return;
+        entry->exc = tmp;
+        entry->exc_cap = cap;
+    }
+    while (v >= 0x80) {
+        entry->exc[entry->exc_len++] = (uint8_t)(v | 0x80);
+        v >>= 7;
+    }
+    entry->exc[entry->exc_len++] = (uint8_t)v;
+}
+
+/* Hand a frame's accumulated control-flow blob to its CallRecordData and
+ * pop it. Used both for a normal return and, during exception unwinding,
+ * to flush callee entries abandoned below the frame that catches. */
+static void finalize_and_pop_top(PyFrameObject *frame_obj) {
+    FrameStack *stack = get_frame_stack(frame_obj);
+    if (stack->count == 0) return;
+    FrameEntry *entry = &stack->entries[stack->count - 1];
+    if (entry->record) {
+        if (entry->bit_pos > 0) {
+            size_t nbytes = (entry->bit_pos + 7) / 8;
+            entry->record->control_flow = malloc(nbytes);
+            if (entry->record->control_flow) {
+                memcpy(entry->record->control_flow, entry->bits, nbytes);
+                entry->record->control_flow_len = (Py_ssize_t)nbytes;
+                entry->record->control_flow_bits = (int64_t)entry->bit_pos;
+            }
+        }
+        if (entry->exc_len > 0) {
+            entry->record->control_flow_exc = malloc(entry->exc_len);
+            if (entry->record->control_flow_exc) {
+                memcpy(entry->record->control_flow_exc, entry->exc, entry->exc_len);
+                entry->record->control_flow_exc_len = (Py_ssize_t)entry->exc_len;
+            }
+        }
+        db_complete_call((DatabaseObject *)g_state.db, entry->record);
+        entry->record = NULL;
+    }
+    frame_stack_pop(frame_obj);
 }
 
 /* ---- scope check ---- */
@@ -571,35 +633,39 @@ void d3g_branch_hook(_PyInterpreterFrame *frame, int taken) {
     FrameEntry *entry = frame_stack_peek(frame_obj);
     if (!entry) return;
 
-    if (entry->branch_len >= entry->branch_cap) {
-        entry->branch_cap = entry->branch_cap ? entry->branch_cap * 2 : 32;
-        entry->branch_buf = realloc(entry->branch_buf, entry->branch_cap);
-        if (!entry->branch_buf) return;
-    }
-    /* 0/1: conditional jump not taken/taken (FOR_ITER: next/exhausted);
-     * 2: `async for` exhausted (END_ASYNC_FOR); 3 + u32: handler entered. */
-    entry->branch_buf[entry->branch_len++] = (unsigned char)taken;
+    /* 0/1: conditional jump not taken/taken (FOR_ITER: next/exhausted;
+     * `async for` continue/exhausted). Always the currently active frame,
+     * so top-of-stack is always this frame's own entry. */
+    bits_append(entry, taken ? 1u : 0u);
 }
 
+/* Fires once per handler entered (PUSH_EXC_INFO), always in the frame that
+ * catches -- but any callee frames unwound below it by this same exception
+ * never ran their own return hook, so they may still be sitting on top of
+ * the shared per-coroutine stack. Flush those first (exactly as a normal
+ * return eventually would, just not lazily) to both find this frame's real
+ * entry and get an exact unwind depth for free. */
 void d3g_exc_handler_hook(_PyInterpreterFrame *frame, int offset) {
     if (!g_state.enabled) return;
     uint64_t cid = iframe_get_call_id(frame);
     if (cid == 0 || cid == UINT64_MAX) return;
     PyFrameObject *frame_obj = frame->frame_obj;
     if (!frame_obj) return;
-    FrameEntry *entry = frame_stack_peek(frame_obj);
-    if (!entry) return;
-    if (entry->branch_len + 5 > entry->branch_cap) {
-        size_t cap = entry->branch_cap ? entry->branch_cap * 2 : 32;
-        while (cap < entry->branch_len + 5) cap *= 2;
-        entry->branch_cap = cap;
-        entry->branch_buf = realloc(entry->branch_buf, entry->branch_cap);
+
+    FrameStack *stack = get_frame_stack(frame_obj);
+    uint64_t unwind_depth = 0;
+    while (stack->count > 0 && stack->entries[stack->count - 1].call_id != cid) {
+        finalize_and_pop_top(frame_obj);
+        unwind_depth++;
     }
-    unsigned char *p = entry->branch_buf + entry->branch_len;
-    p[0] = 3;
-    p[1] = (unsigned char)offset; p[2] = (unsigned char)(offset >> 8);
-    p[3] = (unsigned char)(offset >> 16); p[4] = (unsigned char)(offset >> 24);
-    entry->branch_len += 5;
+    if (stack->count == 0) return;
+    FrameEntry *entry = &stack->entries[stack->count - 1];
+
+    uint64_t delta = (uint64_t)(entry->bit_pos - entry->last_exc_bit_pos);
+    entry->last_exc_bit_pos = entry->bit_pos;
+    exc_put_varint(entry, delta);
+    exc_put_varint(entry, (uint64_t)offset);
+    exc_put_varint(entry, unwind_depth);
 }
 
 /* ---- item hooks (subscript operations) ---- */
@@ -843,9 +909,13 @@ static void push_traced_frame(PyFrameObject *frame, uint64_t call_id,
     FrameEntry entry;
     entry.call_id = call_id;
     entry.record = record;
-    entry.branch_buf = NULL;
-    entry.branch_len = 0;
-    entry.branch_cap = 0;
+    entry.bits = NULL;
+    entry.bit_pos = 0;
+    entry.bits_cap = 0;
+    entry.exc = NULL;
+    entry.exc_len = 0;
+    entry.exc_cap = 0;
+    entry.last_exc_bit_pos = 0;
 
     frame_stack_push(frame, &entry);
 }
@@ -989,25 +1059,8 @@ static int handle_return(PyObject *py_frame, PyFrameObject *frame_obj) {
 
     FrameStack *stack = get_frame_stack(frame_obj);
     while (stack->count > 0) {
-        FrameEntry *entry = &stack->entries[stack->count - 1];
-
-        uint64_t entry_cid = entry->call_id;
-
-        if (entry->branch_len > 0 && entry->record) {
-            entry->record->control_flow = malloc(entry->branch_len);
-            if (entry->record->control_flow) {
-                memcpy(entry->record->control_flow, entry->branch_buf, entry->branch_len);
-                entry->record->control_flow_len = entry->branch_len;
-            }
-        }
-
-        /* The record is complete: move it out of process memory. */
-        if (entry->record) {
-            db_complete_call((DatabaseObject *)g_state.db, entry->record);
-            entry->record = NULL;
-        }
-
-        frame_stack_pop(frame_obj);
+        uint64_t entry_cid = stack->entries[stack->count - 1].call_id;
+        finalize_and_pop_top(frame_obj);
         if (entry_cid == cid) break;
     }
     return 0;

@@ -65,6 +65,7 @@ static void free_event(TraceEvent *ev) {
     case EV_CALL:
         if (ev->u.call) {
             free(ev->u.call->control_flow);
+            free(ev->u.call->control_flow_exc);
             free(ev->u.call->attr_reads);
             free(ev->u.call);
         }
@@ -113,6 +114,8 @@ static const char *SCHEMA_SQL =
     "    call_lineno INTEGER NOT NULL,"
     "    obj_id INTEGER NOT NULL,"
     "    control_flow BLOB,"
+    "    control_flow_bits INTEGER NOT NULL DEFAULT 0,"
+    "    control_flow_exc BLOB,"
     "    func_idx INTEGER NOT NULL DEFAULT 0,"
     "    created_id INTEGER NOT NULL DEFAULT 0,"
     "    created_lineno INTEGER NOT NULL DEFAULT 0,"
@@ -283,7 +286,7 @@ static int open_db(void) {
         sqlite3_finalize(s);
     }
 
-    if (prep(&st.call, "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?,?,?)") < 0 ||
+    if (prep(&st.call, "INSERT INTO calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?)") < 0 ||
         prep(&st.call_arg, "INSERT INTO call_args VALUES (?,?,?,?)") < 0 ||
         prep(&st.attr_read, "INSERT INTO attr_reads VALUES (?,?,?,?,?)") < 0 ||
         prep(&st.object, "INSERT INTO objects VALUES (?,?,?)") < 0 ||
@@ -338,9 +341,15 @@ static void write_event(const TraceEvent *ev) {
                               (int)rec->control_flow_len, SQLITE_STATIC);
         else
             sqlite3_bind_null(st.call, 7);
-        sqlite3_bind_int(st.call, 8, rec->func_idx);
-        sqlite3_bind_int64(st.call, 9, (sqlite3_int64)rec->created_id);
-        sqlite3_bind_int(st.call, 10, rec->created_lineno);
+        sqlite3_bind_int64(st.call, 8, (sqlite3_int64)rec->control_flow_bits);
+        if (rec->control_flow_exc && rec->control_flow_exc_len > 0)
+            sqlite3_bind_blob(st.call, 9, rec->control_flow_exc,
+                              (int)rec->control_flow_exc_len, SQLITE_STATIC);
+        else
+            sqlite3_bind_null(st.call, 9);
+        sqlite3_bind_int(st.call, 10, rec->func_idx);
+        sqlite3_bind_int64(st.call, 11, (sqlite3_int64)rec->created_id);
+        sqlite3_bind_int(st.call, 12, rec->created_lineno);
         sqlite3_step(st.call);
         sqlite3_reset(st.call);
 

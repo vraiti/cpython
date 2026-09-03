@@ -1480,7 +1480,7 @@ dummy_func(
             assert(exc && PyExceptionInstance_Check(exc));
             int matches = PyErr_GivenExceptionMatches(exc, PyExc_StopAsyncIteration);
             if (matches) {
-                d3g_branch_hook(frame, 2);  /* D3G: async for exhausted */
+                d3g_branch_hook(frame, 1);  /* D3G: async for exhausted */
                 DECREF_INPUTS();
             }
             else {
