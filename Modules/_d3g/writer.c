@@ -178,33 +178,24 @@ static int is_db_file(const char *name) {
     return len > 3 && strcmp(name + len - 3, ".db") == 0;
 }
 
-/* PYTHON_D3G_OUTDIR is claimed exclusively by d3g: a fresh trace run wipes
- * whatever *.db files (including a previous run's merged trace.db) are left
- * over from the last one, rather than accumulating numbered run directories
- * forever. Anything else found there means the directory wasn't handed to
- * d3g exclusively -- that's a configuration mistake, not something to route
- * around, so it's fatal: the process exits rather than risk deleting or
- * cohabiting with unrelated files. */
-static void validate_and_clear_outdir(const char *outdir) {
+/* PYTHON_D3G_OUTDIR is claimed exclusively by d3g: anything other than a
+ * *.db file found there means the directory wasn't handed to d3g
+ * exclusively -- that's a configuration mistake, not something to route
+ * around, so it's fatal: the process exits rather than risk cohabiting with
+ * unrelated files. */
+static void validate_outdir(const char *outdir) {
     DIR *d = opendir(outdir);
-    if (!d) return; /* doesn't exist yet -- nothing to validate or clear */
+    if (!d) return; /* doesn't exist yet -- nothing to validate */
     struct dirent *ent;
     while ((ent = readdir(d))) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
         if (!is_db_file(ent->d_name)) {
             fprintf(stderr,
                     "d3g: PYTHON_D3G_OUTDIR '%s' contains '%s', which is not a .db file; "
-                    "refusing to overwrite it\n", outdir, ent->d_name);
+                    "refusing to use it\n", outdir, ent->d_name);
             closedir(d);
             exit(1);
         }
-    }
-    rewinddir(d);
-    while ((ent = readdir(d))) {
-        if (!is_db_file(ent->d_name)) continue;
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", outdir, ent->d_name);
-        unlink(path);
     }
     closedir(d);
 }
@@ -216,17 +207,14 @@ static int open_db(void) {
     /* A process belongs to the same trace run as its immediate parent if
      * that parent already has a "{parent_pid}.db" directly under outdir;
      * only a process with no traced parent (the root of a new trace tree)
-     * clears outdir out for a fresh run. This assumes at most one trace
-     * tree writes to a given outdir at a time -- unlike the old numbered
-     * run directories, two unrelated root processes racing on the same
-     * outdir can now clobber each other. */
+     * validates outdir's contents. */
     char parent_db[4096];
     snprintf(parent_db, sizeof(parent_db), "%s/%d.db", outdir, (int)getppid());
     struct stat st_buf;
     int has_parent = (stat(parent_db, &st_buf) == 0);
 
     mkdir(outdir, 0755);
-    if (!has_parent) validate_and_clear_outdir(outdir);
+    if (!has_parent) validate_outdir(outdir);
 
     db_pid = getpid();
     snprintf(db_path, sizeof(db_path), "%s/%d.db", outdir, (int)db_pid);
