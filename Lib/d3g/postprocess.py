@@ -5,9 +5,12 @@
 
 The work is done by the Rust binary `d3g-postprocess` (source in
 postprocess/ at the repository root; build with `cargo build --release`).
-It parses source files through this interpreter via `d3g.astdump`, so the
+It parses source files via `$VIRTUAL_ENV/bin/python3` (deliberately a plain,
+uninstrumented interpreter, not this one, so parsing source for the
+postprocessor doesn't itself get traced) through `d3g.astdump`, so the
 statement structure replayed against the recorded control flow is the one
-the traced program actually ran.
+the traced program actually ran. $VIRTUAL_ENV and $PYTHON_D3G_OUTDIR must
+be set by the caller.
 
 The binary is located via $D3G_POSTPROCESS, then $PATH, then the
 repository's postprocess/target/release directory.
@@ -45,7 +48,7 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    argv = [binary, "--python", sys.executable, *sys.argv[1:]]
+    argv = [binary, *sys.argv[1:]]
     os.execv(binary, argv)
 
 
